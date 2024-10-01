@@ -10,7 +10,16 @@ declare global {
       funasrModelSource?: string;
       whisperLocalEndpoint?: string;
     };
-    useSettingsSchema: (schema: any[]) => void;
+    updateSettings: (settings: Partial<typeof logseq.settings>) => Promise<void>;
+    useSettingsSchema: (schema: Array<{
+      key: string;
+      type: string;
+      default: any;
+      title: string;
+      description: string;
+      enumChoices?: string[];
+      visibility?: string;
+    }>) => void;
     Editor: {
       registerSlashCommand: (name: string, callback: Function) => void;
       registerBlockContextMenuItem: (name: string, callback: Function) => void;
@@ -26,6 +35,7 @@ declare global {
     provideUI: (options: any) => void;
     showSettingsUI: () => void;
     ready: (callback: () => Promise<void>) => void;
+    onSettingsChanged: (callback: (settings: typeof logseq.settings) => void) => void;
   };
 }
 

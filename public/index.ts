@@ -49,20 +49,65 @@ export function getTranscriptionSettings(): TranscriptionOptions {
 
 console.log("Plugin script started loading");
 
+// 在文件顶部添加这行
+let globalWhisperLocalEndpoint: string | undefined;
+
+// 在文件顶部添加这个声明
+declare global {
+  interface Window {
+    whisperSubtitlesPlugin: {
+      getSetting: (key: string) => any;
+      getAllSettings: () => any;
+    };
+  }
+}
+
+// 在 main 函数中或 logseq.ready 回调中添加这段代码
+window.whisperSubtitlesPlugin = {
+  getSetting: (key: string) => logseq.settings?.[key],
+  getAllSettings: () => logseq.settings
+};
+
+// 将 getSetting 函数定义为全局函数
+function getSetting(key: string): any {
+  return logseq.settings?.[key];
+}
+
 // 主函数
-function main() {
+async function main() {
   console.log("Main function started");
+  console.log("Initial settings:", logseq.settings);
   
-  l10nSetup({ builtinTranslations: { ja } })
-    .then(() => {
-      console.log("l10n setup completed");
-      registerSettings();
-      registerCommands();
-      console.log("Plugin initialization completed");
-    })
-    .catch(error => {
-      console.error("Error in l10n setup:", error);
-    });
+  await l10nSetup({ builtinTranslations: { ja } });
+  console.log("l10n setup completed");
+  
+  registerSettings();
+  console.log("Settings after registration:", logseq.settings);
+  
+  // 添加延迟检查
+  setTimeout(() => {
+    console.log("Delayed settings check:", logseq.settings);
+    console.log("whisperLocalEndpoint:", logseq.settings?.whisperLocalEndpoint);
+    registerCommands();
+    console.log("Plugin initialization completed");
+
+    // 添加这个新的检查
+    setTimeout(() => {
+      console.log("Final whisperLocalEndpoint check:", logseq.settings?.whisperLocalEndpoint);
+      if (typeof logseq.settings?.whisperLocalEndpoint === 'undefined') {
+        console.warn("whisperLocalEndpoint is still undefined, setting default value");
+        logseq.updateSettings({
+          whisperLocalEndpoint: "http://127.0.0.1:5014"
+        });
+      }
+    }, 2000);
+  }, 1000);
+
+  // 在 main 函数中，添加这行
+  globalWhisperLocalEndpoint = logseq.settings?.whisperLocalEndpoint;
+
+  const whisperLocalEndpoint = getSetting('whisperLocalEndpoint');
+  console.log("Safely retrieved whisperLocalEndpoint:", whisperLocalEndpoint);
 }
 
 function registerSettings() {
@@ -90,7 +135,7 @@ function registerSettings() {
       enumChoices: ["tiny", "base", "small", "medium", "large"],
       title: t("Whisper model size"),
       description: t("Only applicable for Whisper model"),
-      visibility: (settings) => settings.modelType === "whisper",
+      visibility: "modelType === 'whisper'",
     },
     {
       key: "funasrModelName",
@@ -99,7 +144,7 @@ function registerSettings() {
       enumChoices: funasrModels,
       title: t("FunASR model"),
       description: t("Choose FunASR model"),
-      visibility: (settings) => settings.modelType === "funasr",
+      visibility: "modelType === 'funasr'",
     },
     {
       key: "funasrModelSource",
@@ -108,7 +153,7 @@ function registerSettings() {
       enumChoices: ["modelscope", "huggingface"],
       title: t("FunASR model source"),
       description: t("Choose FunASR model source"),
-      visibility: (settings) => settings.modelType === "funasr",
+      visibility: "modelType === 'funasr'",
     },
     {
       key: "minLength",
@@ -135,6 +180,7 @@ function registerSettings() {
   ]);
 
   console.log("Plugin settings registered");
+  console.log("Settings immediately after registration:", logseq.settings);
 }
 
 function registerCommands() {
@@ -176,22 +222,53 @@ export async function runTranscription(b: IHookEvent) {
 
 // 转录内容
 async function transcribeContent(content: string, options: TranscriptionOptions): Promise<TranscriptionResponse> {
-  // 实现将取决于我们如何处理转录过程
-  // 这可能涉及向本地服务器发送请求，或使用 Web Worker 运行轻量级模型
-  // 这里是一个示例实现，实际使用时需要根据实际情况修改
-  const response = await fetch(logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014/transcribe", {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ content, ...options }),
-  });
+  console.log("Current settings in transcribeContent:", logseq.settings);
+  console.log("whisperLocalEndpoint in transcribeContent:", logseq.settings?.whisperLocalEndpoint);
+  console.log("globalWhisperLocalEndpoint:", globalWhisperLocalEndpoint);
+  console.log("Full settings object:", JSON.stringify(logseq.settings, null, 2));
+  
+  const whisperLocalEndpoint = getSetting('whisperLocalEndpoint');
+  console.log("whisperLocalEndpoint in transcribeContent:", whisperLocalEndpoint);
+  
+  const endpoint = whisperLocalEndpoint || "http://127.0.0.1:5014/transcribe";
+  console.log("Using endpoint:", endpoint);
+  
+  const formData = new FormData();
+  formData.append('text', content);
+  formData.append('model_type', options.modelType);
+  // Append other options as needed
+  
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
 
-  if (!response.ok) {
-    throw new Error(`HTTP error! status: ${response.status}`);
+    if (!response.ok) {
+      console.error("Server response:", response.status, response.statusText);
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const { task_id } = await response.json();
+    console.log("Task ID:", task_id);
+
+    // Poll for task status
+    while (true) {
+      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
+      const statusResponse = await fetch(`${logseq.settings?.whisperLocalEndpoint}/task_status/${task_id}`);
+      const statusData = await statusResponse.json();
+
+      if (statusData.status === 'completed') {
+        return statusData;
+      } else if (statusData.status === 'error') {
+        throw new Error(statusData.message);
+      }
+      // If status is 'processing', continue polling
+    }
+  } catch (error) {
+    console.error("Fetch error:", error);
+    throw error;
   }
-
-  return await response.json();
 }
 
 // 插入转录结果
@@ -212,7 +289,7 @@ function formatTime(seconds: number): string {
 
 //---- 弹出 UI 相关函数 ----
 
-const keyNamePopup = "whisper--popup"; // 弹出窗口的 key 名称
+const keyNamePopup = "whisper--popup"; // 弹出窗的 key 名称
 
 // 更新消息
 // 当弹出窗口显示时，如果想中途更改消息，可以使用此函数
@@ -340,4 +417,58 @@ const removePopupUI = () => parent.document.getElementById(logseq.baseInfo.id + 
 //---- 弹出 UI 相关函数结束 ----
 
 console.log("Plugin script finished loading, calling logseq.ready");
-logseq.ready(main);
+logseq.ready(async () => {
+  console.log("Logseq is ready");
+  await initializeSettings();
+  console.log("Settings initialized");
+  await main();
+  console.log("Main function completed");
+  console.log("Final settings check:", logseq.settings);
+  console.log("Final whisperLocalEndpoint check:", logseq.settings?.whisperLocalEndpoint);
+
+  // 添加这些行来确保全局函数已经被正确添加
+  console.log("getSetting function:", window.getSetting);
+  console.log("getAllSettings function:", window.getAllSettings);
+
+  // 添加定期检查
+  setInterval(() => {
+    console.log("Periodic settings check:", logseq.settings);
+    console.log("Periodic whisperLocalEndpoint check:", logseq.settings?.whisperLocalEndpoint);
+  }, 10000); // 每10秒检查一次
+
+  logseq.onSettingsChanged((newSettings) => {
+    console.log("Settings changed:", newSettings);
+    console.log("New whisperLocalEndpoint:", newSettings.whisperLocalEndpoint);
+  });
+}).catch(console.error);
+
+async function initializeSettings() {
+  return new Promise<void>((resolve) => {
+    const checkSettings = () => {
+      console.log("Checking settings:", logseq.settings);
+      if (logseq.settings && Object.keys(logseq.settings).length > 0) {
+        console.log("Settings initialized:", logseq.settings);
+        if (!logseq.settings.whisperLocalEndpoint) {
+          console.log("Setting default whisperLocalEndpoint");
+          logseq.updateSettings({
+            whisperLocalEndpoint: "http://127.0.0.1:5014"
+          });
+        }
+        resolve();
+      } else {
+        console.log("Waiting for settings to initialize...");
+        setTimeout(checkSettings, 100);
+      }
+    };
+    checkSettings();
+  });
+}
+
+logseq.provideModel({
+  getSetting(key: string) {
+    return logseq.settings[key];
+  },
+  getAllSettings() {
+    return logseq.settings;
+  }
+});
