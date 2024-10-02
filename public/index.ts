@@ -13,6 +13,12 @@ interface TranscriptionOptions {
   zhType?: string;                  // 中文类型（简体或繁体）
   funasrModelName?: string;         // FunASR 模型名称
   funasrModelSource?: string;       // FunASR 模型源
+  ollamaModel?: string;
+  ollamaEndpoint?: string;
+  segmentModel?: string;
+  openaiApiKey?: string;
+  openaiModel?: string;
+  openaiApiEndpoint?: string;
 }
 
 // 定义转录段落接口
@@ -24,9 +30,12 @@ interface TranscriptionSegment {
 
 // 定义转录响应接口
 interface TranscriptionResponse {
-  segments: TranscriptionSegment[];  // 转录段落数组
-  source: string;  // 源类型（如 YouTube、本地文件等）
-  error: string;   // 错误信息（如果有）
+  segments: {
+    start: number;
+    text: string;
+  }[];
+  source?: string;
+  error?: string;
 }
 
 // 获取转录设置
@@ -37,6 +46,12 @@ export function getTranscriptionSettings(): TranscriptionOptions {
   const zhType = logseq.settings?.["zhType"] as string;
   const funasrModelName = logseq.settings?.["funasrModelName"] as string;
   const funasrModelSource = logseq.settings?.["funasrModelSource"] as string;
+  const ollamaModel = logseq.settings?.["ollamaModel"] as string;
+  const ollamaEndpoint = logseq.settings?.["ollamaEndpoint"] as string;
+  const segmentModel = logseq.settings?.["segmentModel"] as string;
+  const openaiApiKey = logseq.settings?.["openaiApiKey"] as string;
+  const openaiModel = logseq.settings?.["openaiModel"] as string;
+  const openaiApiEndpoint = logseq.settings?.["openaiApiEndpoint"] as string;
   return {
     modelType,
     whisperModelSize,
@@ -44,6 +59,12 @@ export function getTranscriptionSettings(): TranscriptionOptions {
     zhType,
     funasrModelName,
     funasrModelSource,
+    ollamaModel,
+    ollamaEndpoint,
+    segmentModel,
+    openaiApiKey,
+    openaiModel,
+    openaiApiEndpoint,
   };
 }
 
@@ -113,9 +134,13 @@ async function main() {
 function registerSettings() {
   console.log("Registering plugin settings");
   
+  // const funasrModels = [
+  //   "SenseVoiceSmall", "paraformer-zh", "paraformer-zh-streaming", "paraformer-en",
+  //   "conformer-en", "ct-punc", "fsmn-vad", "fsmn-kws", "fa-zh", "cam++",
+  //   "Qwen-Audio", "Qwen-Audio-Chat", "emotion2vec+large"
+  // ];
   const funasrModels = [
-    "SenseVoiceSmall", "paraformer-zh", "paraformer-zh-streaming", "paraformer-en",
-    "conformer-en", "ct-punc", "fsmn-vad", "fsmn-kws", "fa-zh", "cam++",
+    "paraformer-zh", "paraformer-en",
     "Qwen-Audio", "Qwen-Audio-Chat", "emotion2vec+large"
   ];
 
@@ -177,10 +202,95 @@ function registerSettings() {
       title: t("Chinese language type"),
       description: "zh-cn and zh-tw",
     },
+    {
+      key: "ollamaEndpoint",
+      type: "string",
+      default: "http://localhost:11434",
+      title: t("Ollama API Endpoint"),
+      description: t("Endpoint for Ollama API"),
+    },
+    {
+      key: "ollamaModel",
+      type: "string",
+      default: "qwen2.5:3b",
+      title: t("Ollama Model"),
+      description: t("Model to use for text segmentation"),
+    },
+    {
+      key: "segmentModel",
+      type: "enum",
+      default: "ollama",
+      enumChoices: ["ollama", "openai"],
+      title: t("Text Segmentation Model"),
+      description: t("Choose the model for text segmentation"),
+    },
+    {
+      key: "openaiApiKey",
+      type: "string",
+      default: "",
+      title: t("OpenAI API Key"),
+      description: t("Required for OpenAI text segmentation"),
+      visibility: "segmentModel === 'openai'",
+    },
+    {
+      key: "openaiApiEndpoint",
+      type: "string",
+      default: "https://api.openai.com/v1",
+      title: t("OpenAI API Endpoint"),
+      description: t("Endpoint for OpenAI API"),
+      visibility: "segmentModel === 'openai'",
+    },
+    {
+      key: "openaiModel",
+      type: "string",
+      default: "gpt-3.5-turbo",
+      title: t("OpenAI Model"),
+      description: t("Model to use for text segmentation with OpenAI"),
+      visibility: "segmentModel === 'openai'",
+    },
+    {
+      key: "outputFormat",
+      type: "string",
+      default: "{{youtube-timestamp <start>}} <text>",
+      title: t("Custom output format"),
+      description: t("Use <start> for timestamp and <text> for transcribed text"),
+    },
+    {
+      key: "grandparentBlockTitle",
+      type: "string",
+      default: "#字幕合集",
+      title: t("Grandparent block title"),
+      description: t("Title for the grandparent block of transcription. Leave empty to skip creating this block."),
+    },
+    {
+      key: "parentBlockTitle",
+      type: "string",
+      default: "#字幕时间轴",
+      title: t("Parent block title"),
+      description: t("Title for the parent block of transcription. Leave empty to skip creating this block."),
+    },
   ]);
 
   console.log("Plugin settings registered");
   console.log("Settings immediately after registration:", logseq.settings);
+
+  // 获取可用的 Ollama 模型
+  fetchOllamaModels();
+}
+
+async function fetchOllamaModels() {
+  const endpoint = logseq.settings?.ollamaEndpoint || "http://localhost:11434";
+  try {
+    const response = await fetch(`${logseq.settings?.whisperLocalEndpoint}/ollama_models?endpoint=${endpoint}`);
+    if (response.ok) {
+      const models = await response.json();
+      logseq.updateSettings({
+        ollamaModelChoices: models
+      });
+    }
+  } catch (error) {
+    console.error("Failed to fetch Ollama models:", error);
+  }
 }
 
 function registerCommands() {
@@ -211,6 +321,7 @@ export async function runTranscription(b: IHookEvent) {
 
       // 插入转录结果
       await insertTranscription(currentBlock, transcription);
+      logseq.UI.showMsg(t("Transcription completed and inserted"), "success");
     } catch (e: any) {
       logseq.UI.showMsg(t("Transcription failed: ") + e.message, "error");
     } finally {
@@ -224,19 +335,42 @@ export async function runTranscription(b: IHookEvent) {
 async function transcribeContent(content: string, options: TranscriptionOptions): Promise<TranscriptionResponse> {
   console.log("Current settings in transcribeContent:", logseq.settings);
   console.log("whisperLocalEndpoint in transcribeContent:", logseq.settings?.whisperLocalEndpoint);
-  console.log("globalWhisperLocalEndpoint:", globalWhisperLocalEndpoint);
   console.log("Full settings object:", JSON.stringify(logseq.settings, null, 2));
   
-  const whisperLocalEndpoint = getSetting('whisperLocalEndpoint');
-  console.log("whisperLocalEndpoint in transcribeContent:", whisperLocalEndpoint);
-  
-  const endpoint = whisperLocalEndpoint || "http://127.0.0.1:5014/transcribe";
+  const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
+  const endpoint = `${baseEndpoint}/transcribe`;
   console.log("Using endpoint:", endpoint);
   
   const formData = new FormData();
   formData.append('text', content);
   formData.append('model_type', options.modelType);
-  // Append other options as needed
+  if (options.modelType === 'whisper' && options.whisperModelSize) {
+    formData.append('model_size', options.whisperModelSize);
+  }
+  if (options.minLength) {
+    formData.append('min_length', options.minLength);
+  }
+  if (options.zhType) {
+    formData.append('zh_type', options.zhType);
+  }
+  if (options.modelType === 'funasr') {
+    if (options.funasrModelName) {
+      formData.append('funasr_model_name', options.funasrModelName);
+    }
+    if (options.funasrModelSource) {
+      formData.append('funasr_model_source', options.funasrModelSource);
+    }
+  }
+  formData.append('segment_model', options.segmentModel || logseq.settings?.segmentModel || "ollama");
+  
+  if (options.segmentModel === 'ollama') {
+    formData.append('ollama_model', options.ollamaModel || logseq.settings?.ollamaModel || "qwen2.5:3b");
+    formData.append('ollama_endpoint', options.ollamaEndpoint || logseq.settings?.ollamaEndpoint || "http://localhost:11434");
+  } else if (options.segmentModel === 'openai') {
+    formData.append('openai_api_key', options.openaiApiKey || logseq.settings?.openaiApiKey || "");
+    formData.append('openai_model', options.openaiModel || logseq.settings?.openaiModel || "gpt-3.5-turbo");
+    formData.append('openai_api_endpoint', options.openaiApiEndpoint || logseq.settings?.openaiApiEndpoint || "https://api.openai.com/v1");
+  }
   
   try {
     const response = await fetch(endpoint, {
@@ -246,25 +380,14 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
 
     if (!response.ok) {
       console.error("Server response:", response.status, response.statusText);
+      const responseText = await response.text();
+      console.error("Response body:", responseText);
       throw new Error(`HTTP error! status: ${response.status}`);
     }
 
-    const { task_id } = await response.json();
-    console.log("Task ID:", task_id);
-
-    // Poll for task status
-    while (true) {
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait for 1 second
-      const statusResponse = await fetch(`${logseq.settings?.whisperLocalEndpoint}/task_status/${task_id}`);
-      const statusData = await statusResponse.json();
-
-      if (statusData.status === 'completed') {
-        return statusData;
-      } else if (statusData.status === 'error') {
-        throw new Error(statusData.message);
-      }
-      // If status is 'processing', continue polling
-    }
+    const result = await response.json();
+    console.log("Server response:", result);
+    return result;
   } catch (error) {
     console.error("Fetch error:", error);
     throw error;
@@ -273,18 +396,57 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
 
 // 插入转录结果
 async function insertTranscription(block: any, transcription: TranscriptionResponse) {
+  console.log("Inserting transcription:", transcription);
+  const outputFormat = logseq.settings?.outputFormat || "{{youtube-timestamp <start>}} <text>";
+  const parentBlockTitle = logseq.settings?.parentBlockTitle || "";
+  const grandparentBlockTitle = logseq.settings?.grandparentBlockTitle || "";
+  
+  let insertionBlock = block;
+  
+  if (grandparentBlockTitle && parentBlockTitle) {
+    // 1. 创建祖父块（与视频块同级）
+    let grandparentBlock = await logseq.Editor.insertBlock(block.uuid, grandparentBlockTitle, { sibling: true });
+    if (!grandparentBlock) {
+      throw new Error("Failed to create grandparent block");
+    }
+    
+    // 2. 创建父块（作为祖父块的子块）
+    let parentBlock = await logseq.Editor.insertBlock(grandparentBlock.uuid, parentBlockTitle, { sibling: false });
+    if (!parentBlock) {
+      throw new Error("Failed to create parent block");
+    }
+    insertionBlock = parentBlock;
+  } else if (grandparentBlockTitle || parentBlockTitle) {
+    // 如果只有一个非空，创建一个块（与视频块同级）
+    const blockTitle = grandparentBlockTitle || parentBlockTitle;
+    let newBlock = await logseq.Editor.insertBlock(block.uuid, blockTitle, { sibling: true });
+    if (!newBlock) {
+      throw new Error("Failed to create block");
+    }
+    insertionBlock = newBlock;
+  }
+  // 如果两个都为空，insertionBlock 保持为原始的 block
+
+  // 3. 插入转录内容
   const blocks: IBatchBlock[] = transcription.segments.map(segment => ({
-    content: `${formatTime(segment.startTime)}${segment.endTime ? ' - ' + formatTime(segment.endTime) : ''} ${segment.segment}`,
+    content: outputFormat
+      .replace('<start>', formatTime(segment.start))
+      .replace('<text>', segment.text),
   }));
 
-  await logseq.Editor.insertBatchBlock(block.uuid, blocks, { sibling: false });
+  await logseq.Editor.insertBatchBlock(insertionBlock.uuid, blocks, { sibling: false });
 }
 
 // 格式化时间
 function formatTime(seconds: number): string {
-  const date = new Date(0);
-  date.setSeconds(seconds);
-  return date.toISOString().substr(11, 8);
+  if (typeof seconds !== 'number' || isNaN(seconds) || seconds < 0) {
+    console.warn("Invalid time value:", seconds);
+    return "00:00:00";
+  }
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
 //---- 弹出 UI 相关函数 ----
@@ -434,7 +596,7 @@ logseq.ready(async () => {
   setInterval(() => {
     console.log("Periodic settings check:", logseq.settings);
     console.log("Periodic whisperLocalEndpoint check:", logseq.settings?.whisperLocalEndpoint);
-  }, 10000); // 每10秒检查一次
+  }, 10000); // 每10秒检一次
 
   logseq.onSettingsChanged((newSettings) => {
     console.log("Settings changed:", newSettings);

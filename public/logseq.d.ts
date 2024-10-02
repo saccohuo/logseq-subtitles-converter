@@ -24,6 +24,7 @@ declare global {
       registerSlashCommand: (name: string, callback: Function) => void;
       registerBlockContextMenuItem: (name: string, callback: Function) => void;
       getBlock: (uuid: string) => Promise<any>;
+      insertBlock: (uuid: string, content: string, options?: { before?: boolean, sibling?: boolean }) => Promise<any>;
       insertBatchBlock: (uuid: string, blocks: any[], options: any) => Promise<void>;
     };
     UI: {
