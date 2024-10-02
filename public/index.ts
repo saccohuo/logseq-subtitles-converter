@@ -96,7 +96,7 @@ export function getTranscriptionSettings(): TranscriptionOptions {
 console.log("Plugin script started loading");
 
 // 在文件顶部添加这行
-let globalWhisperLocalEndpoint: string | undefined;
+// let globalWhisperLocalEndpoint: string | undefined;
 
 // 在文件顶部添加这个声明
 declare global {
@@ -108,7 +108,7 @@ declare global {
   }
 }
 
-// 在 main 函数中或 logseq.ready 回调中添加这段代码
+// 在 main 函数中或 logseq.ready 回调中添加段代码
 window.whisperSubtitlesPlugin = {
   getSetting: (key: string) => logseq.settings?.[key],
   getAllSettings: () => logseq.settings
@@ -122,49 +122,22 @@ function getSetting(key: string): any {
 // 主函数
 async function main() {
   console.log("Main function started");
-  console.log("Initial settings:", logseq.settings);
   
   await l10nSetup({ builtinTranslations: { ja } });
   console.log("l10n setup completed");
   
   registerSettings();
-  console.log("Settings after registration:", logseq.settings);
   
-  // 添加延迟检查
-  setTimeout(() => {
-    console.log("Delayed settings check:", logseq.settings);
-    console.log("whisperLocalEndpoint:", logseq.settings?.whisperLocalEndpoint);
-    registerCommands();
-    console.log("Plugin initialization completed");
+  registerCommands();
+  console.log("Plugin initialization completed");
 
-    // 添加这个新的检查
-    setTimeout(() => {
-      console.log("Final whisperLocalEndpoint check:", logseq.settings?.whisperLocalEndpoint);
-      if (typeof logseq.settings?.whisperLocalEndpoint === 'undefined') {
-        console.warn("whisperLocalEndpoint is still undefined, setting default value");
-        logseq.updateSettings({
-          whisperLocalEndpoint: "http://127.0.0.1:5014"
-        });
-      }
-    }, 2000);
-  }, 1000);
-
-  // 在 main 函数中，添加这行
-  globalWhisperLocalEndpoint = logseq.settings?.whisperLocalEndpoint;
-
-  const whisperLocalEndpoint = getSetting('whisperLocalEndpoint');
-  console.log("Safely retrieved whisperLocalEndpoint:", whisperLocalEndpoint);
-
-  await fetchOllamaModels();
+  // 删除 Ollama 模型获取相关的代码
 
   logseq.onSettingsChanged((newSettings, oldSettings) => {
-    console.log("Settings changed:", newSettings);
-    if (newSettings.ollamaEndpoint !== oldSettings.ollamaEndpoint ||
-        newSettings.whisperLocalEndpoint !== oldSettings.whisperLocalEndpoint) {
-      console.log("Ollama endpoint or Whisper local endpoint changed, fetching new Ollama models");
-      fetchOllamaModels();
-    }
+    // 删除 Ollama 相关的设置变更处理
   });
+
+  // 删除 logseq.provideModel 调用
 }
 
 function registerSettings() {
@@ -350,10 +323,17 @@ function registerSettings() {
     },
     {
       key: 'group_segmentation',
-      title: "✂️ Text Segmentation Settings",
+      title: "✂ Text Segmentation Settings",
       description: "",
       type: "heading",
       default: null,
+    },
+    {
+      key: "performSegmentation",
+      type: "boolean",
+      default: false,
+      title: t("Perform text segmentation"),
+      description: t("Choose whether to perform text segmentation after transcription"),
     },
     {
       key: "segmentModel",
@@ -362,6 +342,7 @@ function registerSettings() {
       enumChoices: ["ollama", "openai"],
       title: t("Text Segmentation Model"),
       description: t("Choose the model for text segmentation"),
+      visibility: "performSegmentation === true",
     },
     {
       key: 'group_ollama',
@@ -381,11 +362,10 @@ function registerSettings() {
     },
     {
       key: "ollamaModel",
-      type: "enum",
+      type: "string",
       default: "qwen2.5:3b",
-      enumChoices: ["qwen2.5:3b"], // 提供一个默认选项
       title: t("Ollama Model"),
-      description: t("Model to use for text segmentation. The list will be updated after fetching available models."),
+      description: t("Model to use for text segmentation. Enter the model name manually."),
       visibility: "segmentModel === 'ollama'",
     },
     {
@@ -401,38 +381,6 @@ function registerSettings() {
 
   console.log("Plugin settings registered");
   console.log("Settings immediately after registration:", logseq.settings);
-
-  // 获取可用的 Ollama 模型
-  fetchOllamaModels();
-}
-
-async function fetchOllamaModels() {
-  const endpoint = logseq.settings?.ollamaEndpoint || "http://localhost:11434";
-  console.log("Fetching Ollama models from endpoint:", endpoint);
-  try {
-    const response = await fetch(`${logseq.settings?.whisperLocalEndpoint}/ollama_models?endpoint=${endpoint}`);
-    if (response.ok) {
-      const models = await response.json();
-      console.log("Fetched Ollama models:", models);
-      // 更新设置模式
-      const updatedSchema = logseq.settings?.["settingsSchema"] || [];
-      const ollamaModelIndex = updatedSchema.findIndex(item => item.key === "ollamaModel");
-      if (ollamaModelIndex !== -1) {
-        updatedSchema[ollamaModelIndex].enumChoices = models;
-        console.log("Updating settings schema with new Ollama models");
-        await logseq.updateSettings({
-          settingsSchema: updatedSchema
-        });
-        console.log("Settings schema updated");
-      } else {
-        console.log("Could not find ollamaModel in settings schema");
-      }
-    } else {
-      console.error("Failed to fetch Ollama models:", response.status, response.statusText);
-    }
-  } catch (error) {
-    console.error("Error fetching Ollama models:", error);
-  }
 }
 
 function registerCommands() {
@@ -475,13 +423,8 @@ export async function runTranscription(b: IHookEvent) {
 
 // 转录内容
 async function transcribeContent(content: string, options: TranscriptionOptions): Promise<TranscriptionResponse> {
-  console.log("Current settings in transcribeContent:", logseq.settings);
-  console.log("whisperLocalEndpoint in transcribeContent:", logseq.settings?.whisperLocalEndpoint);
-  console.log("Full settings object:", JSON.stringify(logseq.settings, null, 2));
-  
   const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
   const endpoint = `${baseEndpoint}/transcribe`;
-  console.log("Using endpoint:", endpoint);
   
   const formData = new FormData();
   formData.append('text', content);
@@ -536,6 +479,8 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
       }
     }
   }
+
+  formData.append('perform_segmentation', (logseq.settings?.performSegmentation || false).toString());
   
   try {
     const response = await fetch(endpoint, {
@@ -551,12 +496,13 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
     }
 
     const result = await response.json();
-    console.log("Server response:", result);
 
     // 处理 OpenAI API 轮询通知
     if (result.openai_rotation_message) {
       handleOpenAIRotationNotification(result.openai_rotation_message);
     }
+
+    console.log("Perform segmentation:", logseq.settings?.performSegmentation || "No");
 
     return result;
   } catch (error) {
@@ -761,52 +707,7 @@ function handleOpenAIRotationNotification(message: string) {
 }
 
 console.log("Plugin script finished loading, calling logseq.ready");
-logseq.ready(async () => {
-  console.log("Logseq is ready");
-  await initializeSettings();
-  console.log("Settings initialized");
-  await main();
-  console.log("Main function completed");
-  console.log("Final settings check:", logseq.settings);
-  console.log("Final whisperLocalEndpoint check:", logseq.settings?.whisperLocalEndpoint);
-
-  // 添加这些行来确保全局函数已经被正确添加
-  console.log("getSetting function:", window.getSetting);
-  console.log("getAllSettings function:", window.getAllSettings);
-
-  // 添加定期检查
-  setInterval(() => {
-    console.log("Periodic settings check:", logseq.settings);
-    console.log("Periodic whisperLocalEndpoint check:", logseq.settings?.whisperLocalEndpoint);
-  }, 10000); // 每10秒检一次
-
-  logseq.onSettingsChanged((newSettings) => {
-    console.log("Settings changed:", newSettings);
-    console.log("New whisperLocalEndpoint:", newSettings.whisperLocalEndpoint);
-  });
-}).catch(console.error);
-
-async function initializeSettings() {
-  return new Promise<void>((resolve) => {
-    const checkSettings = () => {
-      console.log("Checking settings:", logseq.settings);
-      if (logseq.settings && Object.keys(logseq.settings).length > 0) {
-        console.log("Settings initialized:", logseq.settings);
-        if (!logseq.settings.whisperLocalEndpoint) {
-          console.log("Setting default whisperLocalEndpoint");
-          logseq.updateSettings({
-            whisperLocalEndpoint: "http://127.0.0.1:5014"
-          });
-        }
-        resolve();
-      } else {
-        console.log("Waiting for settings to initialize...");
-        setTimeout(checkSettings, 100);
-      }
-    };
-    checkSettings();
-  });
-}
+logseq.ready(main).catch(console.error);
 
 logseq.provideModel({
   getSetting(key: string) {
