@@ -480,7 +480,7 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
     }
   }
 
-  formData.append('perform_segmentation', (logseq.settings?.performSegmentation || false).toString());
+  formData.append('perform_segmentation', logseq.settings?.performSegmentation ? 'true' : 'false');
   
   try {
     const response = await fetch(endpoint, {
