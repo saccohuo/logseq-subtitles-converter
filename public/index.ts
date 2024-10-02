@@ -16,9 +16,17 @@ interface TranscriptionOptions {
   ollamaModel?: string;
   ollamaEndpoint?: string;
   segmentModel?: string;
-  openaiApiKey?: string;
-  openaiModel?: string;
-  openaiApiEndpoint?: string;
+  openaiPriority?: string;
+  enableOpenaiRotation?: boolean;
+  useSharedOpenAIApiKey?: boolean;
+  sharedOpenAIApiKey?: string;
+  useSharedOpenAIApiEndpoint?: boolean;
+  sharedOpenAIApiEndpoint?: string;
+  openaiSettings?: Array<{
+    apiKey: string;
+    model: string;
+    apiEndpoint: string;
+  }>;
 }
 
 // 定义转录段落接口
@@ -40,7 +48,7 @@ interface TranscriptionResponse {
 
 // 获取转录设置
 export function getTranscriptionSettings(): TranscriptionOptions {
-  const modelType = (logseq.settings?.["modelType"] as 'whisper' | 'funasr') || "whisper";  // 默认使用 whisper
+  const modelType = (logseq.settings?.["modelType"] as 'whisper' | 'funasr') || "whisper";
   const whisperModelSize = logseq.settings?.["whisperModelSize"] as string;
   const minLength = logseq.settings?.["minLength"] as string;
   const zhType = logseq.settings?.["zhType"] as string;
@@ -49,9 +57,22 @@ export function getTranscriptionSettings(): TranscriptionOptions {
   const ollamaModel = logseq.settings?.["ollamaModel"] as string;
   const ollamaEndpoint = logseq.settings?.["ollamaEndpoint"] as string;
   const segmentModel = logseq.settings?.["segmentModel"] as string;
-  const openaiApiKey = logseq.settings?.["openaiApiKey"] as string;
-  const openaiModel = logseq.settings?.["openaiModel"] as string;
-  const openaiApiEndpoint = logseq.settings?.["openaiApiEndpoint"] as string;
+  const openaiPriority = logseq.settings?.["openaiPriority"] as string;
+  const enableOpenaiRotation = logseq.settings?.["enableOpenaiRotation"] as boolean;
+  const useSharedOpenAIApiKey = logseq.settings?.["useSharedOpenAIApiKey"] as boolean;
+  const sharedOpenAIApiKey = logseq.settings?.["sharedOpenAIApiKey"] as string;
+  const useSharedOpenAIApiEndpoint = logseq.settings?.["useSharedOpenAIApiEndpoint"] as boolean;
+  const sharedOpenAIApiEndpoint = logseq.settings?.["sharedOpenAIApiEndpoint"] as string;
+
+  const openaiSettings = [];
+  for (let i = 1; i <= 5; i++) {
+    openaiSettings.push({
+      apiKey: logseq.settings?.[`openaiApiKey${i}`] as string,
+      model: logseq.settings?.[`openaiModel${i}`] as string,
+      apiEndpoint: logseq.settings?.[`openaiApiEndpoint${i}`] as string,
+    });
+  }
+
   return {
     modelType,
     whisperModelSize,
@@ -62,9 +83,13 @@ export function getTranscriptionSettings(): TranscriptionOptions {
     ollamaModel,
     ollamaEndpoint,
     segmentModel,
-    openaiApiKey,
-    openaiModel,
-    openaiApiEndpoint,
+    openaiPriority,
+    enableOpenaiRotation,
+    useSharedOpenAIApiKey,
+    sharedOpenAIApiKey,
+    useSharedOpenAIApiEndpoint,
+    sharedOpenAIApiEndpoint,
+    openaiSettings,
   };
 }
 
@@ -129,22 +154,106 @@ async function main() {
 
   const whisperLocalEndpoint = getSetting('whisperLocalEndpoint');
   console.log("Safely retrieved whisperLocalEndpoint:", whisperLocalEndpoint);
+
+  await fetchOllamaModels();
+
+  logseq.onSettingsChanged((newSettings, oldSettings) => {
+    console.log("Settings changed:", newSettings);
+    if (newSettings.ollamaEndpoint !== oldSettings.ollamaEndpoint ||
+        newSettings.whisperLocalEndpoint !== oldSettings.whisperLocalEndpoint) {
+      console.log("Ollama endpoint or Whisper local endpoint changed, fetching new Ollama models");
+      fetchOllamaModels();
+    }
+  });
 }
 
 function registerSettings() {
   console.log("Registering plugin settings");
   
-  // const funasrModels = [
-  //   "SenseVoiceSmall", "paraformer-zh", "paraformer-zh-streaming", "paraformer-en",
-  //   "conformer-en", "ct-punc", "fsmn-vad", "fsmn-kws", "fa-zh", "cam++",
-  //   "Qwen-Audio", "Qwen-Audio-Chat", "emotion2vec+large"
-  // ];
-  const funasrModels = [
-    "paraformer-zh", "paraformer-en",
-    "Qwen-Audio", "Qwen-Audio-Chat", "emotion2vec+large"
+  const openaiSettingsGroup = [
+    {
+      key: "openaiPriority",
+      type: "string",
+      default: "1,2,3,4,5",
+      title: t("OpenAI API Priority"),
+      description: t("Set the priority for OpenAI API settings (1-5, separated by comma, priority from high to low)"),
+    },
+    {
+      key: "enableOpenaiRotation",
+      type: "boolean",
+      default: false,
+      title: t("Enable OpenAI API Rotation"),
+      description: t("Rotate through OpenAI API settings if text segmentation fails"),
+    },
+    {
+      key: "useSharedOpenAIApiKey",
+      type: "boolean",
+      default: false,
+      title: t("Use Shared OpenAI API Key"),
+      description: t("Use shared OpenAI API Key for all configurations"),
+    },
+    {
+      key: "sharedOpenAIApiKey",
+      type: "string",
+      default: "",
+      title: t("Shared OpenAI API Key"),
+      description: t("Shared API key for all OpenAI configurations"),
+      visibility: "useSharedOpenAIApiKey === true",
+    },
+    {
+      key: "useSharedOpenAIApiEndpoint",
+      type: "boolean",
+      default: false,
+      title: t("Use Shared OpenAI API Endpoint"),
+      description: t("Use shared OpenAI API Endpoint for all configurations"),
+    },
+    {
+      key: "sharedOpenAIApiEndpoint",
+      type: "string",
+      default: "https://api.openai.com/v1",
+      title: t("Shared OpenAI API Endpoint"),
+      description: t("Shared API endpoint for all OpenAI configurations"),
+      visibility: "useSharedOpenAIApiEndpoint === true",
+    },
   ];
 
+  // 为每组 OpenAI 设置添加输入框
+  for (let i = 1; i <= 5; i++) {
+    openaiSettingsGroup.push(
+      {
+        key: `openaiApiKey${i}`,
+        type: "string",
+        default: "",
+        title: t(`OpenAI API Key ${i}`),
+        description: t(`API key for OpenAI setting ${i}`),
+        visibility: "useSharedOpenAIApiKey === false",
+      },
+      {
+        key: `openaiApiEndpoint${i}`,
+        type: "string",
+        default: "https://api.openai.com/v1",
+        title: t(`OpenAI API Endpoint ${i}`),
+        description: t(`API endpoint for OpenAI setting ${i}`),
+        visibility: "useSharedOpenAIApiEndpoint === false",
+      },
+      {
+        key: `openaiModel${i}`,
+        type: "string",
+        default: "gpt-3.5-turbo",
+        title: t(`OpenAI Model ${i}`),
+        description: t(`Model to use for OpenAI setting ${i}`),
+      }
+    );
+  }
+
   logseq.useSettingsSchema([
+    {
+      key: 'group_general',
+      title: "🎛️ General Settings",
+      description: "",
+      type: "heading",
+      default: null,
+    },
     {
       key: "modelType",
       type: "enum",
@@ -152,6 +261,41 @@ function registerSettings() {
       enumChoices: ["whisper", "funasr"],
       title: t("Speech recognition model"),
       description: t("Choose between Whisper and FunASR models"),
+    },
+    {
+      key: "whisperLocalEndpoint",
+      type: "string",
+      default: "http://127.0.0.1:5014",
+      title: t("End point of logseq-whisper-subtitles-server"),
+      description: t("default: http://127.0.0.1:5014"),
+    },
+    {
+      key: "outputFormat",
+      type: "string",
+      default: "{{youtube-timestamp <start>}} <text>",
+      title: t("Output Format"),
+      description: t("Format for the transcription output. Use <start> for timestamp and <text> for transcribed text"),
+    },
+    {
+      key: "grandparentBlockTitle",
+      type: "string",
+      default: "",
+      title: t("Grandparent Block Title"),
+      description: t("Title for the grandparent block of transcription. Leave empty to skip creating this block."),
+    },
+    {
+      key: "parentBlockTitle",
+      type: "string",
+      default: "",
+      title: t("Parent Block Title"),
+      description: t("Title for the parent block of transcription. Leave empty to skip creating this block."),
+    },
+    {
+      key: 'group_whisper',
+      title: "🗣️ Whisper Settings",
+      description: "",
+      type: "heading",
+      default: null,
     },
     {
       key: "whisperModelSize",
@@ -163,10 +307,34 @@ function registerSettings() {
       visibility: "modelType === 'whisper'",
     },
     {
+      key: "minLength",
+      type: "number",
+      default: 100,
+      title: t("Minimum length of a segment"),
+      description: t("if set to zero, segments will be split by .?!, otherwise, segments less than minLength will be merged"),
+      visibility: "modelType === 'whisper'",
+    },
+    {
+      key: "zhType",
+      type: "enum",
+      default: "zh-cn",
+      enumChoices: ["zh-cn", "zh-tw"],
+      title: t("Chinese language type"),
+      description: "zh-cn and zh-tw",
+      visibility: "modelType === 'whisper'",
+    },
+    {
+      key: 'group_funasr',
+      title: "🎙️ FunASR Settings",
+      description: "",
+      type: "heading",
+      default: null,
+    },
+    {
       key: "funasrModelName",
       type: "enum",
       default: "SenseVoiceSmall",
-      enumChoices: funasrModels,
+      enumChoices: ["paraformer-zh", "paraformer-en", "Qwen-Audio", "Qwen-Audio-Chat", "emotion2vec+large"],
       title: t("FunASR model"),
       description: t("Choose FunASR model"),
       visibility: "modelType === 'funasr'",
@@ -181,40 +349,11 @@ function registerSettings() {
       visibility: "modelType === 'funasr'",
     },
     {
-      key: "minLength",
-      type: "number",
-      default: 100,
-      title: t("Minimum length of a segment"),
-      description: t("if set to zero, segments will be split by .?!, otherwise, segments less than minLength will be merged"),
-    },
-    {
-      key: "whisperLocalEndpoint",
-      type: "string",
-      default: "http://127.0.0.1:5014",
-      title: t("End point of logseq-whisper-subtitles-server"),
-      description: t("default: http://127.0.0.1:5014"),
-    },
-    {
-      key: "zhType",
-      type: "enum",
-      default: "zh-cn",
-      enumChoices: ["zh-cn", "zh-tw"],
-      title: t("Chinese language type"),
-      description: "zh-cn and zh-tw",
-    },
-    {
-      key: "ollamaEndpoint",
-      type: "string",
-      default: "http://localhost:11434",
-      title: t("Ollama API Endpoint"),
-      description: t("Endpoint for Ollama API"),
-    },
-    {
-      key: "ollamaModel",
-      type: "string",
-      default: "qwen2.5:3b",
-      title: t("Ollama Model"),
-      description: t("Model to use for text segmentation"),
+      key: 'group_segmentation',
+      title: "✂️ Text Segmentation Settings",
+      description: "",
+      type: "heading",
+      default: null,
     },
     {
       key: "segmentModel",
@@ -225,50 +364,39 @@ function registerSettings() {
       description: t("Choose the model for text segmentation"),
     },
     {
-      key: "openaiApiKey",
+      key: 'group_ollama',
+      title: "🤖 Ollama Settings",
+      description: "",
+      type: "heading",
+      default: null,
+      visibility: "segmentModel === 'ollama'",
+    },
+    {
+      key: "ollamaEndpoint",
       type: "string",
-      default: "",
-      title: t("OpenAI API Key"),
-      description: t("Required for OpenAI text segmentation"),
+      default: "http://localhost:11434",
+      title: t("Ollama API Endpoint"),
+      description: t("Endpoint for Ollama API"),
+      visibility: "segmentModel === 'ollama'",
+    },
+    {
+      key: "ollamaModel",
+      type: "enum",
+      default: "qwen2.5:3b",
+      enumChoices: ["qwen2.5:3b"], // 提供一个默认选项
+      title: t("Ollama Model"),
+      description: t("Model to use for text segmentation. The list will be updated after fetching available models."),
+      visibility: "segmentModel === 'ollama'",
+    },
+    {
+      key: 'group_openai',
+      title: "🧠 OpenAI API Settings",
+      description: "",
+      type: "heading",
+      default: null,
       visibility: "segmentModel === 'openai'",
     },
-    {
-      key: "openaiApiEndpoint",
-      type: "string",
-      default: "https://api.openai.com/v1",
-      title: t("OpenAI API Endpoint"),
-      description: t("Endpoint for OpenAI API"),
-      visibility: "segmentModel === 'openai'",
-    },
-    {
-      key: "openaiModel",
-      type: "string",
-      default: "gpt-3.5-turbo",
-      title: t("OpenAI Model"),
-      description: t("Model to use for text segmentation with OpenAI"),
-      visibility: "segmentModel === 'openai'",
-    },
-    {
-      key: "outputFormat",
-      type: "string",
-      default: "{{youtube-timestamp <start>}} <text>",
-      title: t("Custom output format"),
-      description: t("Use <start> for timestamp and <text> for transcribed text"),
-    },
-    {
-      key: "grandparentBlockTitle",
-      type: "string",
-      default: "#字幕合集",
-      title: t("Grandparent block title"),
-      description: t("Title for the grandparent block of transcription. Leave empty to skip creating this block."),
-    },
-    {
-      key: "parentBlockTitle",
-      type: "string",
-      default: "#字幕时间轴",
-      title: t("Parent block title"),
-      description: t("Title for the parent block of transcription. Leave empty to skip creating this block."),
-    },
+    ...openaiSettingsGroup,
   ]);
 
   console.log("Plugin settings registered");
@@ -280,16 +408,30 @@ function registerSettings() {
 
 async function fetchOllamaModels() {
   const endpoint = logseq.settings?.ollamaEndpoint || "http://localhost:11434";
+  console.log("Fetching Ollama models from endpoint:", endpoint);
   try {
     const response = await fetch(`${logseq.settings?.whisperLocalEndpoint}/ollama_models?endpoint=${endpoint}`);
     if (response.ok) {
       const models = await response.json();
-      logseq.updateSettings({
-        ollamaModelChoices: models
-      });
+      console.log("Fetched Ollama models:", models);
+      // 更新设置模式
+      const updatedSchema = logseq.settings?.["settingsSchema"] || [];
+      const ollamaModelIndex = updatedSchema.findIndex(item => item.key === "ollamaModel");
+      if (ollamaModelIndex !== -1) {
+        updatedSchema[ollamaModelIndex].enumChoices = models;
+        console.log("Updating settings schema with new Ollama models");
+        await logseq.updateSettings({
+          settingsSchema: updatedSchema
+        });
+        console.log("Settings schema updated");
+      } else {
+        console.log("Could not find ollamaModel in settings schema");
+      }
+    } else {
+      console.error("Failed to fetch Ollama models:", response.status, response.statusText);
     }
   } catch (error) {
-    console.error("Failed to fetch Ollama models:", error);
+    console.error("Error fetching Ollama models:", error);
   }
 }
 
@@ -367,9 +509,32 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
     formData.append('ollama_model', options.ollamaModel || logseq.settings?.ollamaModel || "qwen2.5:3b");
     formData.append('ollama_endpoint', options.ollamaEndpoint || logseq.settings?.ollamaEndpoint || "http://localhost:11434");
   } else if (options.segmentModel === 'openai') {
-    formData.append('openai_api_key', options.openaiApiKey || logseq.settings?.openaiApiKey || "");
-    formData.append('openai_model', options.openaiModel || logseq.settings?.openaiModel || "gpt-3.5-turbo");
-    formData.append('openai_api_endpoint', options.openaiApiEndpoint || logseq.settings?.openaiApiEndpoint || "https://api.openai.com/v1");
+    const priority = (logseq.settings?.openaiPriority || "1,2,3,4,5").split(/[,，]/).map(Number);
+    formData.append('enable_openai_rotation', (logseq.settings?.enableOpenaiRotation || false).toString());
+    formData.append('use_shared_openai_api_key', (logseq.settings?.useSharedOpenAIApiKey || false).toString());
+    formData.append('use_shared_openai_api_endpoint', (logseq.settings?.useSharedOpenAIApiEndpoint || false).toString());
+    
+    formData.append('openai_priority', priority.join(','));
+
+    if (logseq.settings?.useSharedOpenAIApiKey) {
+      formData.append('shared_openai_api_key', logseq.settings?.sharedOpenAIApiKey || "");
+    }
+    if (logseq.settings?.useSharedOpenAIApiEndpoint) {
+      formData.append('shared_openai_api_endpoint', logseq.settings?.sharedOpenAIApiEndpoint || "https://api.openai.com/v1");
+    }
+
+    // 修改这部分以传递 openaiModel1 到 openaiModel5
+    for (let i = 1; i <= 5; i++) {
+      const apiKey = logseq.settings?.useSharedOpenAIApiKey ? logseq.settings?.sharedOpenAIApiKey : logseq.settings?.[`openaiApiKey${i}`];
+      const endpoint = logseq.settings?.useSharedOpenAIApiEndpoint ? logseq.settings?.sharedOpenAIApiEndpoint : logseq.settings?.[`openaiApiEndpoint${i}`];
+      const model = logseq.settings?.[`openaiModel${i}`];
+
+      if (apiKey && endpoint) {
+        formData.append(`openai_api_key${i}`, apiKey);
+        formData.append(`openai_api_endpoint${i}`, endpoint);
+        formData.append(`openai_model${i}`, model || ''); // 即使模型为空，也发送一个空字符串
+      }
+    }
   }
   
   try {
@@ -387,6 +552,12 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
 
     const result = await response.json();
     console.log("Server response:", result);
+
+    // 处理 OpenAI API 轮询通知
+    if (result.openai_rotation_message) {
+      handleOpenAIRotationNotification(result.openai_rotation_message);
+    }
+
     return result;
   } catch (error) {
     console.error("Fetch error:", error);
@@ -437,6 +608,7 @@ async function insertTranscription(block: any, transcription: TranscriptionRespo
   await logseq.Editor.insertBatchBlock(insertionBlock.uuid, blocks, { sibling: false });
 }
 
+
 // 格式化时间
 function formatTime(seconds: number): string {
   if (typeof seconds !== 'number' || isNaN(seconds) || seconds < 0) {
@@ -449,7 +621,7 @@ function formatTime(seconds: number): string {
   return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-//---- 弹出 UI 相关函数 ----
+//---- 弹 UI 相关函数 ----
 
 const keyNamePopup = "whisper--popup"; // 弹出窗的 key 名称
 
@@ -457,8 +629,8 @@ const keyNamePopup = "whisper--popup"; // 弹出窗的 key 名称
 // 当弹出窗口显示时，如果想中途更改消息，可以使用此函数
 const updatePopupUI = (messageHTML: string) => {
   const messageEl = parent.document.getElementById("whisperSubtitles--message") as HTMLDivElement | null;
-  if (messageEl) messageEl.innerHTML = messageHTML; // 如果弹出窗口已显示，更新消息
-  else popupUI(messageHTML); // 如果弹出窗口未显示，创建带有消息的弹出窗口
+  if (messageEl) messageEl.innerHTML = messageHTML; // 如果弹出窗口已显示更新消息
+  else popupUI(messageHTML); // 如果弹出窗口未示，创建带有消息的弹出窗口
 };
 
 // 创建弹出窗口
@@ -577,6 +749,16 @@ const hideProcessingUI = () => {
 const removePopupUI = () => parent.document.getElementById(logseq.baseInfo.id + "--" + keyNamePopup)?.remove();
 
 //---- 弹出 UI 相关函数结束 ----
+
+// 添加一个新函数来处理 OpenAI API 轮询的提示
+function handleOpenAIRotationNotification(message: string) {
+  const regex = /Using OpenAI API setting (\d+)/;
+  const match = message.match(regex);
+  if (match) {
+    const number = match[1];
+    logseq.UI.showMsg(`Using OpenAI API setting ${number}`, 'info');
+  }
+}
 
 console.log("Plugin script finished loading, calling logseq.ready");
 logseq.ready(async () => {
