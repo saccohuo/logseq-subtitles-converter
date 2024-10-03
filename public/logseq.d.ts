@@ -29,6 +29,7 @@ declare global {
     };
     UI: {
       showMsg: (message: string, status: string) => void;
+      // 移除 showMessageBox 方法
     };
     baseInfo: {
       id: string;
@@ -37,6 +38,7 @@ declare global {
     showSettingsUI: () => void;
     ready: (callback: () => Promise<void>) => void;
     onSettingsChanged: (callback: (settings: typeof logseq.settings) => void) => void;
+    hideMainUI: () => void;
   };
 }
 

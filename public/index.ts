@@ -108,7 +108,7 @@ declare global {
   }
 }
 
-// 在 main 函数中或 logseq.ready 回调中添加段代码
+// 在 main 函数中或 logseq.ready 回调中添加码
 window.whisperSubtitlesPlugin = {
   getSetting: (key: string) => logseq.settings?.[key],
   getAllSettings: () => logseq.settings
@@ -190,7 +190,7 @@ function registerSettings() {
     },
   ];
 
-  // 为每组 OpenAI 设置添加输入框
+  // 为每组 OpenAI 设置添加 maxSegmentLength
   for (let i = 1; i <= 5; i++) {
     openaiSettingsGroup.push(
       {
@@ -215,6 +215,13 @@ function registerSettings() {
         default: "gpt-3.5-turbo",
         title: t(`OpenAI Model ${i}`),
         description: t(`Model to use for OpenAI setting ${i}`),
+      },
+      {
+        key: `openaiMaxSegmentLength${i}`,
+        type: "number",
+        default: 0,
+        title: t(`OpenAI Max Segment Length ${i}`),
+        description: t(`Maximum segment length for OpenAI setting ${i} (0 to use default)`),
       }
     );
   }
@@ -322,8 +329,16 @@ function registerSettings() {
       visibility: "modelType === 'funasr'",
     },
     {
+      key: "hotwordFilePath",
+      type: "string",
+      default: "",
+      title: t("Hotword File Path"),
+      description: t("Path to the hotword file (optional)"),
+      visibility: "modelType === 'funasr'",
+    },
+    {
       key: 'group_segmentation',
-      title: "✂ Text Segmentation Settings",
+      title: "✂️ Text Segmentation Settings",
       description: "",
       type: "heading",
       default: null,
@@ -343,6 +358,28 @@ function registerSettings() {
       title: t("Text Segmentation Model"),
       description: t("Choose the model for text segmentation"),
       visibility: "performSegmentation === true",
+    },
+    {
+      key: "defaultMaxSegmentLength",
+      type: "number",
+      default: 1500,
+      title: t("Default maximum segment length"),
+      description: t("Default maximum number of characters per segment"),
+    },
+    {
+      key: "segmentationToleranceUnit",
+      type: "enum",
+      default: "percent",
+      enumChoices: ["percent", "characters"],
+      title: t("Segmentation tolerance unit"),
+      description: t("Unit for segmentation tolerance (percentage or characters)"),
+    },
+    {
+      key: "segmentationTolerance",
+      type: "number",
+      default: 5,
+      title: t("Segmentation tolerance"),
+      description: t("Acceptable difference in text length after segmentation (percentage)"),
     },
     {
       key: 'group_ollama',
@@ -366,6 +403,14 @@ function registerSettings() {
       default: "qwen2.5:3b",
       title: t("Ollama Model"),
       description: t("Model to use for text segmentation. Enter the model name manually."),
+      visibility: "segmentModel === 'ollama'",
+    },
+    {
+      key: "ollamaMaxSegmentLength",
+      type: "number",
+      default: 0,
+      title: t("Ollama maximum segment length"),
+      description: t("Maximum number of characters per segment for Ollama (0 to use default)"),
       visibility: "segmentModel === 'ollama'",
     },
     {
@@ -402,8 +447,11 @@ export async function runTranscription(b: IHookEvent) {
     showProcessingUI(currentBlock.uuid);
 
     try {
+      // 使用新的弹窗函数获取热词
+      const hotwords = await showHotwordsInputDialog();
+
       // 执行转录
-      const transcription = await transcribeContent(currentBlock.content, settings);
+      const transcription = await transcribeContent(currentBlock.content, settings, hotwords);
       if (transcription.error) {
         logseq.UI.showMsg(transcription.error, "error");
         return;
@@ -422,7 +470,7 @@ export async function runTranscription(b: IHookEvent) {
 }
 
 // 转录内容
-async function transcribeContent(content: string, options: TranscriptionOptions): Promise<TranscriptionResponse> {
+async function transcribeContent(content: string, options: TranscriptionOptions, hotwords: string): Promise<TranscriptionResponse> {
   const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
   const endpoint = `${baseEndpoint}/transcribe`;
   
@@ -445,8 +493,13 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
     if (options.funasrModelSource) {
       formData.append('funasr_model_source', options.funasrModelSource);
     }
+    formData.append('hotword_file_path', logseq.settings?.hotwordFilePath || "");
+    formData.append('hotwords', hotwords);
   }
   formData.append('segment_model', options.segmentModel || logseq.settings?.segmentModel || "ollama");
+  
+  formData.append('default_max_segment_length', (logseq.settings?.defaultMaxSegmentLength || 1500).toString());
+  formData.append('ollama_max_segment_length', (logseq.settings?.ollamaMaxSegmentLength || 0).toString());
   
   if (options.segmentModel === 'ollama') {
     formData.append('ollama_model', options.ollamaModel || logseq.settings?.ollamaModel || "qwen2.5:3b");
@@ -477,10 +530,13 @@ async function transcribeContent(content: string, options: TranscriptionOptions)
         formData.append(`openai_api_endpoint${i}`, endpoint);
         formData.append(`openai_model${i}`, model || ''); // 即使模型为空，也发送一个空字符串
       }
+      formData.append(`openai_max_segment_length${i}`, (logseq.settings?.[`openaiMaxSegmentLength${i}`] || 0).toString());
     }
   }
 
   formData.append('perform_segmentation', logseq.settings?.performSegmentation ? 'true' : 'false');
+  formData.append('segmentation_tolerance', (logseq.settings?.segmentationTolerance || 5).toString());
+  formData.append('segmentation_tolerance_unit', logseq.settings?.segmentationToleranceUnit || "percent");
   
   try {
     const response = await fetch(endpoint, {
@@ -575,7 +631,7 @@ const keyNamePopup = "whisper--popup"; // 弹出窗的 key 名称
 // 当弹出窗口显示时，如果想中途更改消息，可以使用此函数
 const updatePopupUI = (messageHTML: string) => {
   const messageEl = parent.document.getElementById("whisperSubtitles--message") as HTMLDivElement | null;
-  if (messageEl) messageEl.innerHTML = messageHTML; // 如果弹出窗口已显示更新消息
+  if (messageEl) messageEl.innerHTML = messageHTML; // 如果弹出窗口已显更新消息
   else popupUI(messageHTML); // 如果弹出窗口未示，创建带有消息的弹出窗口
 };
 
@@ -717,3 +773,57 @@ logseq.provideModel({
     return logseq.settings;
   }
 });
+
+function showHotwordsInputDialog(): Promise<string> {
+  return new Promise((resolve) => {
+    logseq.provideUI({
+      key: 'hotwords-input',
+      reset: true,
+      template: `
+        <div class="hotwords-input-container">
+          <h3>Enter Hotwords</h3>
+          <p>Please enter hotwords separated by commas:</p>
+          <textarea id="hotwords-input" rows="4" cols="50"></textarea>
+          <div class="button-container">
+            <button id="submit-hotwords">Submit</button>
+            <button id="cancel-hotwords">Cancel</button>
+          </div>
+        </div>
+      `,
+      style: {
+        width: '400px',
+        height: 'auto',
+        backgroundColor: 'var(--ls-primary-background-color)',
+        color: 'var(--ls-primary-text-color)',
+        padding: '20px',
+        borderRadius: '8px',
+        boxShadow: '0 2px 10px rgba(0, 0, 0, 0.1)',
+      },
+    });
+
+    setTimeout(() => {
+      const submitButton = parent.document.getElementById('submit-hotwords');
+      const cancelButton = parent.document.getElementById('cancel-hotwords');
+      const textarea = parent.document.getElementById('hotwords-input') as HTMLTextAreaElement;
+
+      if (submitButton && cancelButton && textarea) {
+        submitButton.addEventListener('click', () => {
+          const hotwords = textarea.value.trim();
+          logseq.provideUI({
+            key: 'hotwords-input',
+            reset: true,
+          });
+          resolve(hotwords);
+        });
+
+        cancelButton.addEventListener('click', () => {
+          logseq.provideUI({
+            key: 'hotwords-input',
+            reset: true,
+          });
+          resolve('');
+        });
+      }
+    }, 100);
+  });
+}
