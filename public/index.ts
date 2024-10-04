@@ -32,6 +32,8 @@ interface TranscriptionOptions {
   defaultMaxSegmentLength?: number;
   segmentationTolerance?: number;
   segmentationToleranceUnit?: string;
+  summarizeBlockContent?: string;
+  summarizeOpenAISettingIndex?: number;
 }
 
 // 定义转录段落接口
@@ -115,6 +117,8 @@ export function getTranscriptionSettings(): TranscriptionOptions {
   const defaultMaxSegmentLength = logseq.settings?.["defaultMaxSegmentLength"] as number;
   const segmentationTolerance = logseq.settings?.["segmentationTolerance"] as number;
   const segmentationToleranceUnit = logseq.settings?.["segmentationToleranceUnit"] as string;
+  const summarizeBlockContent = logseq.settings?.["summarizeBlockContent"] as string;
+  const summarizeOpenAISettingIndex = logseq.settings?.["summarizeOpenAISettingIndex"] as number;
 
   const openaiSettings = [];
   for (let i = 1; i <= 5; i++) {
@@ -147,6 +151,8 @@ export function getTranscriptionSettings(): TranscriptionOptions {
     defaultMaxSegmentLength,
     segmentationTolerance,
     segmentationToleranceUnit,
+    summarizeBlockContent,
+    summarizeOpenAISettingIndex,
   };
 }
 
@@ -492,6 +498,26 @@ function registerSettings() {
       visibility: "segmentModel === 'openai'",
     },
     ...openaiSettingsGroup,
+    {
+      key: 'group_summarize',
+      title: "🗂️ Summarize Settings",
+      type: "heading",
+      default: null,
+    },
+    {
+      key: "summarizeBlockContent",
+      type: "string",
+      default: "#视频总结",
+      title: t("Summarize Block Content"),
+      description: t("Content of the block to insert before the summary"),
+    },
+    {
+      key: "summarizeOpenAISettingPriority",
+      type: "string",
+      default: "1,2,3,4,5",
+      title: t("OpenAI API Setting Priority for Summarization"),
+      description: t("Choose the priority of OpenAI API settings to use for summarization (comma-separated, e.g., 1,2,3,4,5). Note: This does not use segment_length information."),
+    },
   ]);
 
   console.log("Plugin settings registered");
@@ -510,6 +536,9 @@ function registerCommands() {
   logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file after segment(Youtube)"), (e) => transcribeFromSubtitleFile(e, true, 'youtube'));
   logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file after segment(other video)"), (e) => transcribeFromSubtitleFile(e, true, 'other'));
   
+  // 添加新的 "summarize subtitle" 命令
+  logseq.Editor.registerBlockContextMenuItem(t("summarize subtitle"), summarizeSubtitle);
+  
   console.log("Plugin commands registered");
 }
 
@@ -523,9 +552,12 @@ export async function runTranscription(b: IHookEvent) {
     showProcessingUI(currentBlock.uuid);
 
     try {
-      // 使用新的弹窗函数获取热词
-      const hotwords = await showHotwordsInputDialog();
-      console.log("Hotwords:", hotwords);
+      let hotwords = '';
+      // 只有在 FunASR 模式下才显示热词弹窗
+      if (settings.modelType === 'funasr') {
+        hotwords = await showHotwordsInputDialog();
+        console.log("Hotwords:", hotwords);
+      }
 
       // 执行转录
       const transcription = await transcribeContent(currentBlock.content, settings, hotwords);
@@ -601,7 +633,7 @@ async function insertTranscription(block: any, transcription: TranscriptionRespo
   let insertionBlock = block;
   
   if (grandparentBlockTitle && parentBlockTitle) {
-    // 1. 创建祖父块（与视频块同级）
+    // 1. 创建祖父块（与视频块同级
     let grandparentBlock = await logseq.Editor.insertBlock(block.uuid, grandparentBlockTitle, { sibling: true });
     if (!grandparentBlock) {
       throw new Error("Failed to create grandparent block");
@@ -801,6 +833,8 @@ logseq.provideModel({
 
 function showHotwordsInputDialog(): Promise<string> {
   return new Promise((resolve) => {
+    let timeoutId: NodeJS.Timeout;
+
     logseq.provideUI({
       key: 'hotwords-input',
       reset: true,
@@ -826,28 +860,36 @@ function showHotwordsInputDialog(): Promise<string> {
       },
     });
 
+    const submitHotwords = () => {
+      clearTimeout(timeoutId);
+      const textarea = parent.document.getElementById('hotwords-input') as HTMLTextAreaElement;
+      const hotwords = textarea.value.trim();
+      logseq.provideUI({
+        key: 'hotwords-input',
+        reset: true,
+      });
+      resolve(hotwords);
+    };
+
     setTimeout(() => {
       const submitButton = parent.document.getElementById('submit-hotwords');
       const cancelButton = parent.document.getElementById('cancel-hotwords');
       const textarea = parent.document.getElementById('hotwords-input') as HTMLTextAreaElement;
 
       if (submitButton && cancelButton && textarea) {
-        submitButton.addEventListener('click', () => {
-          const hotwords = textarea.value.trim();
-          logseq.provideUI({
-            key: 'hotwords-input',
-            reset: true,
-          });
-          resolve(hotwords);
-        });
+        submitButton.addEventListener('click', submitHotwords);
 
         cancelButton.addEventListener('click', () => {
+          clearTimeout(timeoutId);
           logseq.provideUI({
             key: 'hotwords-input',
             reset: true,
           });
           resolve('');
         });
+
+        // 设置5分钟后自动提交
+        timeoutId = setTimeout(submitHotwords, 5 *  1000);
       }
     }, 100);
   });
@@ -859,10 +901,8 @@ async function transcribeFromSubtitleFile(b: IHookEvent, performSegmentation: bo
     try {
       console.log("Block content:", currentBlock.content);
       
-      // 显示处理中的 UI
       showProcessingUI(currentBlock.uuid);
 
-      // 从当前块内容中提取字幕文件路径
       const subtitleFilePath = extractSubtitleFilePath(currentBlock.content);
       console.log("Extracted subtitle file path:", subtitleFilePath);
       
@@ -870,19 +910,15 @@ async function transcribeFromSubtitleFile(b: IHookEvent, performSegmentation: bo
         throw new Error("No subtitle file path found in the block content");
       }
 
-      // 获取转录设置
       const settings = getTranscriptionSettings();
 
-      // 读取字幕文件转换为带时间戳的文本
       const transcription = await convertSubtitleToTranscription(subtitleFilePath);
 
-      // 设置 source 为用户选择的格式
       transcription.source = outputFormat;
       console.log("Transcription:", transcription);
 
       let result = transcription.segments;
 
-      // 如果需要执行分段
       if (performSegmentation) {
         const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
         const endpoint = `${baseEndpoint}/segment`;
@@ -907,7 +943,6 @@ async function transcribeFromSubtitleFile(b: IHookEvent, performSegmentation: bo
 
       console.log("Final result:", result);
 
-      // 插入转录结果
       await insertTranscription(currentBlock, { segments: result, source: outputFormat });
 
       logseq.UI.showMsg(t("Transcription from subtitle file completed and inserted"), "success");
@@ -915,7 +950,6 @@ async function transcribeFromSubtitleFile(b: IHookEvent, performSegmentation: bo
       console.error("Error in transcribeFromSubtitleFile:", e);
       logseq.UI.showMsg(t("Transcription from subtitle file failed: ") + e.message, "error");
     } finally {
-      // 隐藏处理中的 UI
       hideProcessingUI();
     }
   }
@@ -1042,6 +1076,125 @@ async function segment_text_with_openai(text: string, settings: TranscriptionOpt
     return result.segments;
   } catch (error) {
     console.error("Segmentation error:", error);
+    throw error;
+  }
+}
+
+async function summarizeSubtitle(e: IHookEvent) {
+  console.log("Starting summarizeSubtitle function");
+  console.log("Event:", e);
+
+  try {
+    const block = await logseq.Editor.getBlock(e.uuid);
+    console.log("Retrieved block:", block);
+
+    if (!block) {
+      throw new Error("Failed to retrieve block");
+    }
+
+    const settings = getTranscriptionSettings();
+    const summarizeBlockContent = settings.summarizeBlockContent || "#视频总结";
+    const summarizeOpenAISettingPriority = settings.summarizeOpenAISettingPriority || "1,2,3,4,5";
+
+    console.log("Settings:", {
+      summarizeBlockContent,
+      summarizeOpenAISettingPriority
+    });
+
+    // 显示处理中的 UI
+    showProcessingUI(block.uuid);
+
+    // 获取块内容（包括子块）
+    const content = await getBlockContentRecursively(block);
+    console.log("Retrieved content:", content);
+
+    // 调用后端 API 进行总结
+    const summary = await summarizeContent(content, summarizeOpenAISettingPriority);
+    console.log("Generated summary:", summary);
+
+    // 创建总结块
+    const summaryBlock = await logseq.Editor.insertBlock(block.uuid, summarizeBlockContent, { sibling: true });
+    console.log("Created summary block:", summaryBlock);
+
+    if (summaryBlock) {
+      await logseq.Editor.insertBlock(summaryBlock.uuid, summary);
+      console.log("Inserted summary content");
+    } else {
+      throw new Error("Failed to create summary block");
+    }
+
+    logseq.UI.showMsg(t("Summary created successfully"), "success");
+  } catch (error) {
+    console.error("Error in summarizeSubtitle:", error);
+    logseq.UI.showMsg(t("Failed to create summary: ") + (error instanceof Error ? error.message : String(error)), "error");
+  } finally {
+    // 隐藏处理中的 UI
+    hideProcessingUI();
+  }
+}
+
+async function getBlockContentRecursively(block: any): Promise<string> {
+  console.log("Starting getBlockContentRecursively for block:", block);
+  let content = block.content.replace(/\{\{.*?\}\}/g, ''); // 移除时间戳
+  if (block.children) {
+    for (const childId of block.children) {
+      try {
+        console.log("Attempting to retrieve child block with ID:", childId);
+        // 检查 childId 是否是数组，如果是，取第二个元素（实际的 UUID）
+        const actualChildId = Array.isArray(childId) ? childId[1] : childId;
+        
+        // 检查 actualChildId 是否是有效的 UUID
+        if (typeof actualChildId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(actualChildId)) {
+          const childBlock = await logseq.Editor.getBlock(actualChildId);
+          if (childBlock) {
+            console.log("Successfully retrieved child block:", childBlock);
+            content += '\n' + await getBlockContentRecursively(childBlock);
+          } else {
+            console.warn("Child block not found for ID:", actualChildId);
+          }
+        } else {
+          console.warn("Invalid child block ID:", actualChildId);
+        }
+      } catch (error) {
+        console.error("Error retrieving child block:", error);
+        if (error instanceof Error) {
+          console.error("Error message:", error.message);
+          console.error("Error stack:", error.stack);
+        }
+        // 继续处理下一个子块，而不是中断整个过程
+      }
+    }
+  }
+  console.log("Finished getBlockContentRecursively, content length:", content.length);
+  return content;
+}
+
+async function summarizeContent(content: string, apiSettingPriority: string): Promise<string> {
+  console.log("Starting summarizeContent, content length:", content.length, "apiSettingPriority:", apiSettingPriority);
+  const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
+  const endpoint = `${baseEndpoint}/summarize`;
+  
+  const settings = getTranscriptionSettings();
+  const formData = new FormData();
+  formData.append('text', content);
+  formData.append('api_setting_priority', apiSettingPriority);
+  appendCommonFormData(formData, settings);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log("Summarization result:", result);
+    return result.summary;
+  } catch (error) {
+    console.error("Error in summarizeContent:", error);
     throw error;
   }
 }
