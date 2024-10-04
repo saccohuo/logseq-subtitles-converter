@@ -33,7 +33,7 @@ interface TranscriptionOptions {
   segmentationTolerance?: number;
   segmentationToleranceUnit?: string;
   summarizeBlockContent?: string;
-  summarizeOpenAISettingIndex?: number;
+  summarizeOpenAISettingPriority?: string;
 }
 
 // 定义转录段落接口
@@ -118,7 +118,7 @@ export function getTranscriptionSettings(): TranscriptionOptions {
   const segmentationTolerance = logseq.settings?.["segmentationTolerance"] as number;
   const segmentationToleranceUnit = logseq.settings?.["segmentationToleranceUnit"] as string;
   const summarizeBlockContent = logseq.settings?.["summarizeBlockContent"] as string;
-  const summarizeOpenAISettingIndex = logseq.settings?.["summarizeOpenAISettingIndex"] as number;
+  const summarizeOpenAISettingPriority = logseq.settings?.["summarizeOpenAISettingPriority"] as string;
 
   const openaiSettings = [];
   for (let i = 1; i <= 5; i++) {
@@ -152,7 +152,7 @@ export function getTranscriptionSettings(): TranscriptionOptions {
     segmentationTolerance,
     segmentationToleranceUnit,
     summarizeBlockContent,
-    summarizeOpenAISettingIndex,
+    summarizeOpenAISettingPriority,
   };
 }
 
