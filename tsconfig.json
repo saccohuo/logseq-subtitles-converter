@@ -14,7 +14,8 @@
 		"resolveJsonModule": true,
 		"allowSyntheticDefaultImports": true,
 		"downlevelIteration": true,
-		"typeRoots": ["./node_modules/@types", "./public"]
+		"typeRoots": ["./node_modules/@types", "./public"],
+		"types": ["node"]
 	},
 	"include": ["node_modules/wmr/types.d.ts", "**/*", "public/logseq.d.ts"],
 	"typeAcquisition": {

@@ -26,7 +26,12 @@ interface TranscriptionOptions {
     apiKey: string;
     model: string;
     apiEndpoint: string;
+    maxSegmentLength: number;
   }>;
+  performSegmentation?: boolean;
+  defaultMaxSegmentLength?: number;
+  segmentationTolerance?: number;
+  segmentationToleranceUnit?: string;
 }
 
 // 定义转录段落接口
@@ -46,6 +51,49 @@ interface TranscriptionResponse {
   error?: string;
 }
 
+// 新增的通用 formData 处理函数
+function appendCommonFormData(formData: FormData, options: TranscriptionOptions) {
+  formData.append('model_type', options.modelType);
+  formData.append('perform_segmentation', options.performSegmentation ? 'true' : 'false');
+  formData.append('segment_model', options.segmentModel || 'ollama');
+  formData.append('max_length', (options.defaultMaxSegmentLength || 1500).toString());
+  formData.append('segmentation_tolerance', (options.segmentationTolerance || 5).toString());
+  formData.append('segmentation_tolerance_unit', options.segmentationToleranceUnit || 'percent');
+
+  if (options.segmentModel === 'openai') {
+    formData.append('enable_openai_rotation', options.enableOpenaiRotation ? 'true' : 'false');
+    formData.append('use_shared_openai_api_key', options.useSharedOpenAIApiKey ? 'true' : 'false');
+    formData.append('use_shared_openai_api_endpoint', options.useSharedOpenAIApiEndpoint ? 'true' : 'false');
+    
+    if (options.useSharedOpenAIApiKey) {
+      formData.append('shared_openai_api_key', options.sharedOpenAIApiKey || '');
+    }
+    if (options.useSharedOpenAIApiEndpoint) {
+      formData.append('shared_openai_api_endpoint', options.sharedOpenAIApiEndpoint || '');
+    }
+    
+    for (let i = 1; i <= 5; i++) {
+      const apiKey = options.useSharedOpenAIApiKey ? options.sharedOpenAIApiKey : options.openaiSettings?.[i-1]?.apiKey;
+      const endpoint = options.useSharedOpenAIApiEndpoint ? options.sharedOpenAIApiEndpoint : options.openaiSettings?.[i-1]?.apiEndpoint;
+      const model = options.openaiSettings?.[i-1]?.model;
+      const maxSegmentLength = options.openaiSettings?.[i-1]?.maxSegmentLength;
+      
+      if (apiKey && endpoint) {
+        formData.append(`openai_api_key${i}`, apiKey);
+        formData.append(`openai_api_endpoint${i}`, endpoint);
+        formData.append(`openai_models${i}`, model || '');
+      }
+      formData.append(`openai_max_segment_length${i}`, (maxSegmentLength || 0).toString());
+    }
+    
+    formData.append('openai_priority', options.openaiPriority || '1,2,3,4,5');
+  } else if (options.segmentModel === 'ollama') {
+    formData.append('ollama_model', options.ollamaModel || logseq.settings?.ollamaModel || "qwen2.5:3b");
+    formData.append('ollama_endpoint', options.ollamaEndpoint || logseq.settings?.ollamaEndpoint || "http://localhost:11434");
+    formData.append('ollama_max_segment_length', (logseq.settings?.ollamaMaxSegmentLength || 0).toString());
+  }
+}
+
 // 获取转录设置
 export function getTranscriptionSettings(): TranscriptionOptions {
   const modelType = (logseq.settings?.["modelType"] as 'whisper' | 'funasr') || "whisper";
@@ -63,6 +111,10 @@ export function getTranscriptionSettings(): TranscriptionOptions {
   const sharedOpenAIApiKey = logseq.settings?.["sharedOpenAIApiKey"] as string;
   const useSharedOpenAIApiEndpoint = logseq.settings?.["useSharedOpenAIApiEndpoint"] as boolean;
   const sharedOpenAIApiEndpoint = logseq.settings?.["sharedOpenAIApiEndpoint"] as string;
+  const performSegmentation = logseq.settings?.["performSegmentation"] as boolean;
+  const defaultMaxSegmentLength = logseq.settings?.["defaultMaxSegmentLength"] as number;
+  const segmentationTolerance = logseq.settings?.["segmentationTolerance"] as number;
+  const segmentationToleranceUnit = logseq.settings?.["segmentationToleranceUnit"] as string;
 
   const openaiSettings = [];
   for (let i = 1; i <= 5; i++) {
@@ -70,6 +122,7 @@ export function getTranscriptionSettings(): TranscriptionOptions {
       apiKey: logseq.settings?.[`openaiApiKey${i}`] as string,
       model: logseq.settings?.[`openaiModel${i}`] as string,
       apiEndpoint: logseq.settings?.[`openaiApiEndpoint${i}`] as string,
+      maxSegmentLength: logseq.settings?.[`openaiMaxSegmentLength${i}`] as number,
     });
   }
 
@@ -90,6 +143,10 @@ export function getTranscriptionSettings(): TranscriptionOptions {
     useSharedOpenAIApiEndpoint,
     sharedOpenAIApiEndpoint,
     openaiSettings,
+    performSegmentation,
+    defaultMaxSegmentLength,
+    segmentationTolerance,
+    segmentationToleranceUnit,
   };
 }
 
@@ -108,7 +165,7 @@ declare global {
   }
 }
 
-// 在 main 函数中或 logseq.ready 回调中添加码
+// 在 main 函数中或 logseq.ready 回调中添加
 window.whisperSubtitlesPlugin = {
   getSetting: (key: string) => logseq.settings?.[key],
   getAllSettings: () => logseq.settings
@@ -138,6 +195,12 @@ async function main() {
   });
 
   // 删除 logseq.provideModel 调用
+
+  // 获取并设置图谱路径
+  const graph = await logseq.App.getCurrentGraph();
+  if (graph) {
+    await logseq.updateSettings({ graphPath: graph.path });
+  }
 }
 
 function registerSettings() {
@@ -250,11 +313,18 @@ function registerSettings() {
       description: t("default: http://127.0.0.1:5014"),
     },
     {
-      key: "outputFormat",
+      key: "youtubeOutputFormat",
       type: "string",
       default: "{{youtube-timestamp <start>}} <text>",
-      title: t("Output Format"),
-      description: t("Format for the transcription output. Use <start> for timestamp and <text> for transcribed text"),
+      title: t("YouTube Output Format"),
+      description: t("Format for YouTube transcription output. Use <start> for timestamp and <text> for transcribed text"),
+    },
+    {
+      key: "otherVideoOutputFormat",
+      type: "string",
+      default: "{{renderer :media-timestamp, <start>}} <text>",
+      title: t("Other Video Output Format"),
+      description: t("Format for non-YouTube video transcription output. Need logseq-media-ts plugin. Use <start> for timestamp and <text> for transcribed text"),
     },
     {
       key: "grandparentBlockTitle",
@@ -434,6 +504,12 @@ function registerCommands() {
   logseq.Editor.registerSlashCommand(t("whisper-subtitles"), runTranscription);
   logseq.Editor.registerBlockContextMenuItem(t("whisper-subtitles"), runTranscription);
   
+  // 注册新的命令
+  logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file(Youtube)"), (e) => transcribeFromSubtitleFile(e, false, 'youtube'));
+  logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file(other video)"), (e) => transcribeFromSubtitleFile(e, false, 'other'));
+  logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file after segment(Youtube)"), (e) => transcribeFromSubtitleFile(e, true, 'youtube'));
+  logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file after segment(other video)"), (e) => transcribeFromSubtitleFile(e, true, 'other'));
+  
   console.log("Plugin commands registered");
 }
 
@@ -449,6 +525,7 @@ export async function runTranscription(b: IHookEvent) {
     try {
       // 使用新的弹窗函数获取热词
       const hotwords = await showHotwordsInputDialog();
+      console.log("Hotwords:", hotwords);
 
       // 执行转录
       const transcription = await transcribeContent(currentBlock.content, settings, hotwords);
@@ -476,67 +553,8 @@ async function transcribeContent(content: string, options: TranscriptionOptions,
   
   const formData = new FormData();
   formData.append('text', content);
-  formData.append('model_type', options.modelType);
-  if (options.modelType === 'whisper' && options.whisperModelSize) {
-    formData.append('model_size', options.whisperModelSize);
-  }
-  if (options.minLength) {
-    formData.append('min_length', options.minLength);
-  }
-  if (options.zhType) {
-    formData.append('zh_type', options.zhType);
-  }
-  if (options.modelType === 'funasr') {
-    if (options.funasrModelName) {
-      formData.append('funasr_model_name', options.funasrModelName);
-    }
-    if (options.funasrModelSource) {
-      formData.append('funasr_model_source', options.funasrModelSource);
-    }
-    formData.append('hotword_file_path', logseq.settings?.hotwordFilePath || "");
-    formData.append('hotwords', hotwords);
-  }
-  formData.append('segment_model', options.segmentModel || logseq.settings?.segmentModel || "ollama");
-  
-  formData.append('default_max_segment_length', (logseq.settings?.defaultMaxSegmentLength || 1500).toString());
-  formData.append('ollama_max_segment_length', (logseq.settings?.ollamaMaxSegmentLength || 0).toString());
-  
-  if (options.segmentModel === 'ollama') {
-    formData.append('ollama_model', options.ollamaModel || logseq.settings?.ollamaModel || "qwen2.5:3b");
-    formData.append('ollama_endpoint', options.ollamaEndpoint || logseq.settings?.ollamaEndpoint || "http://localhost:11434");
-  } else if (options.segmentModel === 'openai') {
-    const priority = (logseq.settings?.openaiPriority || "1,2,3,4,5").split(/[,，]/).map(Number);
-    formData.append('enable_openai_rotation', (logseq.settings?.enableOpenaiRotation || false).toString());
-    formData.append('use_shared_openai_api_key', (logseq.settings?.useSharedOpenAIApiKey || false).toString());
-    formData.append('use_shared_openai_api_endpoint', (logseq.settings?.useSharedOpenAIApiEndpoint || false).toString());
-    
-    formData.append('openai_priority', priority.join(','));
-
-    if (logseq.settings?.useSharedOpenAIApiKey) {
-      formData.append('shared_openai_api_key', logseq.settings?.sharedOpenAIApiKey || "");
-    }
-    if (logseq.settings?.useSharedOpenAIApiEndpoint) {
-      formData.append('shared_openai_api_endpoint', logseq.settings?.sharedOpenAIApiEndpoint || "https://api.openai.com/v1");
-    }
-
-    // 修改这部分以传递 openaiModel1 到 openaiModel5
-    for (let i = 1; i <= 5; i++) {
-      const apiKey = logseq.settings?.useSharedOpenAIApiKey ? logseq.settings?.sharedOpenAIApiKey : logseq.settings?.[`openaiApiKey${i}`];
-      const endpoint = logseq.settings?.useSharedOpenAIApiEndpoint ? logseq.settings?.sharedOpenAIApiEndpoint : logseq.settings?.[`openaiApiEndpoint${i}`];
-      const model = logseq.settings?.[`openaiModel${i}`];
-
-      if (apiKey && endpoint) {
-        formData.append(`openai_api_key${i}`, apiKey);
-        formData.append(`openai_api_endpoint${i}`, endpoint);
-        formData.append(`openai_model${i}`, model || ''); // 即使模型为空，也发送一个空字符串
-      }
-      formData.append(`openai_max_segment_length${i}`, (logseq.settings?.[`openaiMaxSegmentLength${i}`] || 0).toString());
-    }
-  }
-
-  formData.append('perform_segmentation', logseq.settings?.performSegmentation ? 'true' : 'false');
-  formData.append('segmentation_tolerance', (logseq.settings?.segmentationTolerance || 5).toString());
-  formData.append('segmentation_tolerance_unit', logseq.settings?.segmentationToleranceUnit || "percent");
+  formData.append('hotwords', hotwords);  // 添加热词到表单数据
+  appendCommonFormData(formData, options);
   
   try {
     const response = await fetch(endpoint, {
@@ -559,8 +577,13 @@ async function transcribeContent(content: string, options: TranscriptionOptions,
     }
 
     console.log("Perform segmentation:", logseq.settings?.performSegmentation || "No");
+    console.log("Transcription source:", result.source);
+    console.log("Hotwords used:", hotwords);  // 记录使用的热词
 
-    return result;
+    return {
+      segments: result.segments,
+      source: result.source,
+    };
   } catch (error) {
     console.error("Fetch error:", error);
     throw error;
@@ -570,7 +593,8 @@ async function transcribeContent(content: string, options: TranscriptionOptions,
 // 插入转录结果
 async function insertTranscription(block: any, transcription: TranscriptionResponse) {
   console.log("Inserting transcription:", transcription);
-  const outputFormat = logseq.settings?.outputFormat || "{{youtube-timestamp <start>}} <text>";
+  const youtubeOutputFormat = logseq.settings?.youtubeOutputFormat || "{{youtube-timestamp <start>}} <text>";
+  const otherVideoOutputFormat = logseq.settings?.otherVideoOutputFormat || "{{renderer :media-timestamp, <start>}} <text>";
   const parentBlockTitle = logseq.settings?.parentBlockTitle || "";
   const grandparentBlockTitle = logseq.settings?.grandparentBlockTitle || "";
   
@@ -601,12 +625,13 @@ async function insertTranscription(block: any, transcription: TranscriptionRespo
   // 如果两个都为空，insertionBlock 保持为原始的 block
 
   // 3. 插入转录内容
+  const outputFormat = transcription.source === "youtube" ? youtubeOutputFormat : otherVideoOutputFormat;
   const blocks: IBatchBlock[] = transcription.segments.map(segment => ({
     content: outputFormat
       .replace('<start>', formatTime(segment.start))
       .replace('<text>', segment.text),
   }));
-
+  console.log("Blocks:", blocks);
   await logseq.Editor.insertBatchBlock(insertionBlock.uuid, blocks, { sibling: false });
 }
 
@@ -731,7 +756,7 @@ const popupUI = (printMain: string, targetBlockUuid?: string) => {
   }, 50);
 };
 
-// 显示处理中的 UI
+// 显示处理的 UI
 const showProcessingUI = (blockUuid: string) => {
   popupUI(`
     <div id="whisper-subtitles-loader-container">
@@ -747,7 +772,7 @@ const hideProcessingUI = () => {
   removePopupUI();
 };
 
-// 从 DOM 中移除弹出窗口
+// 从 DOM 中除弹出窗口
 const removePopupUI = () => parent.document.getElementById(logseq.baseInfo.id + "--" + keyNamePopup)?.remove();
 
 //---- 弹出 UI 相关函数结束 ----
@@ -826,4 +851,197 @@ function showHotwordsInputDialog(): Promise<string> {
       }
     }, 100);
   });
+}
+
+async function transcribeFromSubtitleFile(b: IHookEvent, performSegmentation: boolean = false, outputFormat: 'youtube' | 'other' = 'other') {
+  const currentBlock = await logseq.Editor.getBlock(b.uuid);
+  if (currentBlock) {
+    try {
+      console.log("Block content:", currentBlock.content);
+      
+      // 显示处理中的 UI
+      showProcessingUI(currentBlock.uuid);
+
+      // 从当前块内容中提取字幕文件路径
+      const subtitleFilePath = extractSubtitleFilePath(currentBlock.content);
+      console.log("Extracted subtitle file path:", subtitleFilePath);
+      
+      if (!subtitleFilePath) {
+        throw new Error("No subtitle file path found in the block content");
+      }
+
+      // 获取转录设置
+      const settings = getTranscriptionSettings();
+
+      // 读取字幕文件转换为带时间戳的文本
+      const transcription = await convertSubtitleToTranscription(subtitleFilePath);
+
+      // 设置 source 为用户选择的格式
+      transcription.source = outputFormat;
+      console.log("Transcription:", transcription);
+
+      let result = transcription.segments;
+
+      // 如果需要执行分段
+      if (performSegmentation) {
+        const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
+        const endpoint = `${baseEndpoint}/segment`;
+        
+        const formData = new FormData();
+        formData.append('text', transcription.segments.map(seg => `{{timestamp ${seg.start}}} ${seg.text}`).join('\n'));
+        appendCommonFormData(formData, settings);
+
+        const response = await fetch(endpoint, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+        }
+
+        const segmentationResult = await response.json();
+        result = segmentationResult.segments;
+      }
+
+      console.log("Final result:", result);
+
+      // 插入转录结果
+      await insertTranscription(currentBlock, { segments: result, source: outputFormat });
+
+      logseq.UI.showMsg(t("Transcription from subtitle file completed and inserted"), "success");
+    } catch (e: any) {
+      console.error("Error in transcribeFromSubtitleFile:", e);
+      logseq.UI.showMsg(t("Transcription from subtitle file failed: ") + e.message, "error");
+    } finally {
+      // 隐藏处理中的 UI
+      hideProcessingUI();
+    }
+  }
+}
+
+function extractSubtitleFilePath(content: string): string | null {
+  // 匹配 orgmode 链接格式
+  const logseqLinkMatch = content.match(/\[\[(.*?\.(?:srt|ass))\]\[.*?\]\]/);
+  if (logseqLinkMatch) {
+    return logseqLinkMatch[1];
+  }
+
+  // 匹配普通的 Markdown 链接格式（保留原有的匹配逻辑）
+  const markdownLinkMatch = content.match(/\[(.*?)\]\((.*?\.(?:srt|ass))\)/);
+  if (markdownLinkMatch) {
+    return markdownLinkMatch[2];
+  }
+
+  return null;
+}
+
+async function convertSubtitleToTranscription(filePath: string): Promise<TranscriptionResponse> {
+  console.log("Converting subtitle file to transcription:", filePath);
+  
+  const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
+  const endpoint = `${baseEndpoint}/convert_subtitle`;
+  
+  const formData = new FormData();
+  formData.append('subtitle_path', filePath);
+  formData.append('graph_path', logseq.settings?.graphPath || '');
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
+    }
+
+    const result = await response.json();
+    console.log("Conversion result:", result);
+
+    return result;
+  } catch (error) {
+    console.error("Error converting subtitle file:", error);
+    throw error;
+  }
+}
+
+async function segmentTranscription(transcription: TranscriptionResponse, settings: TranscriptionOptions): Promise<TranscriptionResponse> {
+  const fullText = transcription.segments.map(seg => `{{timestamp ${seg.start}}} ${seg.text}`).join('\n');
+  const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
+  const endpoint = `${baseEndpoint}/segment`;
+  
+  const formData = new FormData();
+  formData.append('text', fullText);
+  appendCommonFormData(formData, settings);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      console.error("Server response:", response.status, response.statusText);
+      const responseText = await response.text();
+      console.error("Response body:", responseText);
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
+
+    // 处理 OpenAI API 轮询通知
+    if (result.openai_rotation_message) {
+      handleOpenAIRotationNotification(result.openai_rotation_message);
+    }
+
+    console.log("Segmentation result:", result);
+
+    // 将分段后的文本转换回 TranscriptionResponse 格式
+    const segmentedTranscription: TranscriptionResponse = {
+      segments: result.segments.map((segment: string) => {
+        const match = segment.match(/^\{\{timestamp (\d+)\}\} (.+)$/);
+        if (match) {
+          return {
+            start: parseInt(match[1]),
+            text: match[2]
+          };
+        }
+        return null;
+      }).filter((segment: any) => segment !== null)
+    };
+
+    return segmentedTranscription;
+  } catch (error) {
+    console.error("Segmentation error:", error);
+    throw error;
+  }
+}
+
+async function segment_text_with_openai(text: string, settings: TranscriptionOptions): Promise<string[]> {
+  const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
+  const endpoint = `${baseEndpoint}/segment`;
+  
+  const formData = new FormData();
+  formData.append('text', text);
+  appendCommonFormData(formData, settings);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
+    return result.segments;
+  } catch (error) {
+    console.error("Segmentation error:", error);
+    throw error;
+  }
 }
