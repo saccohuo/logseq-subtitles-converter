@@ -527,8 +527,8 @@ function registerSettings() {
 function registerCommands() {
   console.log("Registering plugin commands");
   
-  logseq.Editor.registerSlashCommand(t("whisper-subtitles"), runTranscription);
-  logseq.Editor.registerBlockContextMenuItem(t("whisper-subtitles"), runTranscription);
+  logseq.Editor.registerSlashCommand(t("transcribe-subtitle"), runTranscription);
+  logseq.Editor.registerBlockContextMenuItem(t("transcribe-subtitle"), runTranscription);
   
   // 注册新的命令
   logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file(Youtube)"), (e) => transcribeFromSubtitleFile(e, false, 'youtube'));
@@ -841,7 +841,7 @@ function showHotwordsInputDialog(): Promise<string> {
       template: `
         <div class="hotwords-input-container">
           <h3>Enter Hotwords</h3>
-          <p>Please enter hotwords separated by commas:</p>
+          <p>Please enter hotwords separated by commas(auto close after 3 minutes):</p>
           <textarea id="hotwords-input" rows="4" cols="50"></textarea>
           <div class="button-container">
             <button id="submit-hotwords">Submit</button>
@@ -889,7 +889,7 @@ function showHotwordsInputDialog(): Promise<string> {
         });
 
         // 设置5分钟后自动提交
-        timeoutId = setTimeout(submitHotwords, 5 *  1000);
+        timeoutId = setTimeout(submitHotwords, 3 * 60* 1000);
       }
     }, 100);
   });
