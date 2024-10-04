@@ -527,8 +527,11 @@ function registerSettings() {
 function registerCommands() {
   console.log("Registering plugin commands");
   
-  logseq.Editor.registerSlashCommand(t("transcribe-subtitle"), runTranscription);
-  logseq.Editor.registerBlockContextMenuItem(t("transcribe-subtitle"), runTranscription);
+  logseq.Editor.registerSlashCommand(t("transcribe-video"), runTranscription);
+  logseq.Editor.registerBlockContextMenuItem(t("transcribe-video"), runTranscription);
+  
+  // 添加新的命令
+  logseq.Editor.registerBlockContextMenuItem(t("transcribe-video-without-segment"), (e) => runTranscription(e, false));
   
   // 注册新的命令
   logseq.Editor.registerBlockContextMenuItem(t("transcribe from subtitle file(Youtube)"), (e) => transcribeFromSubtitleFile(e, false, 'youtube'));
@@ -542,8 +545,8 @@ function registerCommands() {
   console.log("Plugin commands registered");
 }
 
-// 运行转录
-export async function runTranscription(b: IHookEvent) {
+// 修改 runTranscription 函数以支持不分段的选项
+export async function runTranscription(b: IHookEvent, performSegmentation: boolean = true) {
   const currentBlock = await logseq.Editor.getBlock(b.uuid);
   if (currentBlock) {
     const settings = getTranscriptionSettings();
@@ -560,7 +563,7 @@ export async function runTranscription(b: IHookEvent) {
       }
 
       // 执行转录
-      const transcription = await transcribeContent(currentBlock.content, settings, hotwords);
+      const transcription = await transcribeContent(currentBlock.content, {...settings, performSegmentation}, hotwords);
       if (transcription.error) {
         logseq.UI.showMsg(transcription.error, "error");
         return;
@@ -578,14 +581,15 @@ export async function runTranscription(b: IHookEvent) {
   }
 }
 
-// 转录内容
+// 修改 transcribeContent 函数以传递 performSegmentation 参数
 async function transcribeContent(content: string, options: TranscriptionOptions, hotwords: string): Promise<TranscriptionResponse> {
   const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
   const endpoint = `${baseEndpoint}/transcribe`;
   
   const formData = new FormData();
   formData.append('text', content);
-  formData.append('hotwords', hotwords);  // 添加热词到表单数据
+  formData.append('hotwords', hotwords);
+  formData.append('perform_segmentation', options.performSegmentation ? 'true' : 'false');
   appendCommonFormData(formData, options);
   
   try {
