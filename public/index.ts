@@ -1182,6 +1182,7 @@ async function summarizeContent(content: string, apiSettingPriority: string): Pr
   const formData = new FormData();
   formData.append('text', content);
   formData.append('api_setting_priority', apiSettingPriority);
+  formData.append('graph_path', logseq.settings?.graphPath || '');
   appendCommonFormData(formData, settings);
 
   try {
