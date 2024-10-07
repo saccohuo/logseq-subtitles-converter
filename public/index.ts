@@ -34,6 +34,8 @@ interface TranscriptionOptions {
   segmentationToleranceUnit?: string;
   summarizeBlockContent?: string;
   summarizeOpenAISettingPriority?: string;
+  parentBlockTitle?: string;
+  grandparentBlockTitle?: string;
 }
 
 // 定义转录段落接口
@@ -119,6 +121,8 @@ export function getTranscriptionSettings(): TranscriptionOptions {
   const segmentationToleranceUnit = logseq.settings?.["segmentationToleranceUnit"] as string;
   const summarizeBlockContent = logseq.settings?.["summarizeBlockContent"] as string;
   const summarizeOpenAISettingPriority = logseq.settings?.["summarizeOpenAISettingPriority"] as string;
+  const parentBlockTitle = logseq.settings?.["parentBlockTitle"] as string;
+  const grandparentBlockTitle = logseq.settings?.["grandparentBlockTitle"] as string;
 
   const openaiSettings = [];
   for (let i = 1; i <= 5; i++) {
@@ -153,6 +157,8 @@ export function getTranscriptionSettings(): TranscriptionOptions {
     segmentationToleranceUnit,
     summarizeBlockContent,
     summarizeOpenAISettingPriority,
+    parentBlockTitle,
+    grandparentBlockTitle,
   };
 }
 
@@ -200,7 +206,7 @@ async function main() {
     // 删除 Ollama 相关的设置变更处理
   });
 
-  // 删除 logseq.provideModel 调用
+  // 除 logseq.provideModel 调用
 
   // 获取并设置图谱路径
   const graph = await logseq.App.getCurrentGraph();
@@ -542,6 +548,9 @@ function registerCommands() {
   // 添加新的 "summarize subtitle" 命令
   logseq.Editor.registerBlockContextMenuItem(t("summarize subtitle"), summarizeSubtitle);
   
+  // 添加新的 "segment subtitle" 命令
+  logseq.Editor.registerBlockContextMenuItem(t("segment subtitle"), segmentSubtitle);
+  
   console.log("Plugin commands registered");
 }
 
@@ -631,44 +640,15 @@ async function insertTranscription(block: any, transcription: TranscriptionRespo
   console.log("Inserting transcription:", transcription);
   const youtubeOutputFormat = logseq.settings?.youtubeOutputFormat || "{{youtube-timestamp <start>}} <text>";
   const otherVideoOutputFormat = logseq.settings?.otherVideoOutputFormat || "{{renderer :media-timestamp, <start>}} <text>";
-  const parentBlockTitle = logseq.settings?.parentBlockTitle || "";
-  const grandparentBlockTitle = logseq.settings?.grandparentBlockTitle || "";
+  const settings = getTranscriptionSettings();
   
-  let insertionBlock = block;
-  
-  if (grandparentBlockTitle && parentBlockTitle) {
-    // 1. 创建祖父块（与视频块同级
-    let grandparentBlock = await logseq.Editor.insertBlock(block.uuid, grandparentBlockTitle, { sibling: true });
-    if (!grandparentBlock) {
-      throw new Error("Failed to create grandparent block");
-    }
-    
-    // 2. 创建父块（作为祖父块的子块）
-    let parentBlock = await logseq.Editor.insertBlock(grandparentBlock.uuid, parentBlockTitle, { sibling: false });
-    if (!parentBlock) {
-      throw new Error("Failed to create parent block");
-    }
-    insertionBlock = parentBlock;
-  } else if (grandparentBlockTitle || parentBlockTitle) {
-    // 如果只有一个非空，创建一个块（与视频块同级）
-    const blockTitle = grandparentBlockTitle || parentBlockTitle;
-    let newBlock = await logseq.Editor.insertBlock(block.uuid, blockTitle, { sibling: true });
-    if (!newBlock) {
-      throw new Error("Failed to create block");
-    }
-    insertionBlock = newBlock;
-  }
-  // 如果两个都为空，insertionBlock 保持为原始的 block
-
-  // 3. 插入转录内容
   const outputFormat = transcription.source === "youtube" ? youtubeOutputFormat : otherVideoOutputFormat;
-  const blocks: IBatchBlock[] = transcription.segments.map(segment => ({
-    content: outputFormat
-      .replace('<start>', formatTime(segment.start))
-      .replace('<text>', segment.text),
-  }));
-  console.log("Blocks:", blocks);
-  await logseq.Editor.insertBatchBlock(insertionBlock.uuid, blocks, { sibling: false });
+
+  await createBlockStructureAndInsertContent(block, transcription.segments, {
+    parentBlockTitle: settings.parentBlockTitle,
+    grandparentBlockTitle: settings.grandparentBlockTitle,
+    outputFormat
+  });
 }
 
 
@@ -1139,7 +1119,7 @@ async function summarizeSubtitle(e: IHookEvent) {
 
 async function getBlockContentRecursively(block: any): Promise<string> {
   console.log("Starting getBlockContentRecursively for block:", block);
-  let content = block.content.replace(/\{\{.*?\}\}/g, ''); // 移除时间戳
+  let content = block.content;
   if (block.children) {
     for (const childId of block.children) {
       try {
@@ -1201,5 +1181,185 @@ async function summarizeContent(content: string, apiSettingPriority: string): Pr
   } catch (error) {
     console.error("Error in summarizeContent:", error);
     throw error;
+  }
+}
+
+// 添加新的 segmentSubtitle 函数
+async function segmentSubtitle(e: IHookEvent) {
+  console.log("Starting segmentSubtitle function");
+  console.log("Event:", e);
+
+  try {
+    const block = await logseq.Editor.getBlock(e.uuid);
+    console.log("Retrieved block:", block);
+
+    if (!block) {
+      throw new Error("Failed to retrieve block");
+    }
+
+    const settings = getTranscriptionSettings();
+    
+    // 显示处理中的 UI
+    showProcessingUI(block.uuid);
+
+    // 获取块内容（包括子块）
+    let content = await getBlockContentRecursively(block);
+    console.log("Retrieved content:", content);
+
+    if (!content.trim()) {
+      throw new Error("No content to segment");
+    }
+
+    // 转换时间戳格式
+    const { text: convertedContent, format: detectedFormat } = convertTimestampFormat(content);
+    console.log("Content after timestamp conversion:", convertedContent);
+    console.log("Detected timestamp format:", detectedFormat);
+
+    // 调用后端 API 进行分段
+    const segmentedContent = await segmentContent(convertedContent, settings);
+    console.log("Segmented content:", segmentedContent);
+
+    const outputFormat = detectedFormat === 'youtube' 
+      ? (logseq.settings?.youtubeOutputFormat || "{{youtube-timestamp <start>}} <text>")
+      : (logseq.settings?.otherVideoOutputFormat || "{{renderer :media-timestamp, <start>}} <text>");
+
+    await createBlockStructureAndInsertContent(block, segmentedContent, {
+      parentBlockTitle: settings.parentBlockTitle,
+      grandparentBlockTitle: settings.grandparentBlockTitle,
+      outputFormat
+    });
+
+    console.log("Inserted segmented content");
+
+    logseq.UI.showMsg(t("Segmentation completed and inserted"), "success");
+  } catch (error) {
+    console.error("Error in segmentSubtitle:", error);
+    logseq.UI.showMsg(t("Failed to segment subtitle: ") + (error instanceof Error ? error.message : String(error)), "error");
+  } finally {
+    // 隐藏处理中的 UI
+    hideProcessingUI();
+  }
+}
+
+// 添加新的 segmentContent 函数
+async function segmentContent(content: string, options: TranscriptionOptions): Promise<Array<{start: number, text: string}>> {
+  console.log("Starting segmentContent, content length:", content.length);
+  const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
+  const endpoint = `${baseEndpoint}/segment`;
+  
+  const formData = new FormData();
+  formData.append('text', content);
+  appendCommonFormData(formData, options);
+
+  try {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    const result = await response.json();
+    console.log("Segmentation result:", result);
+    return result.segments;
+  } catch (error) {
+    console.error("Error in segmentContent:", error);
+    throw error;
+  }
+}
+
+function formatTimestampForOutput(seconds: number, format: string): string {
+  const youtubeOutputFormat = logseq.settings?.youtubeOutputFormat || "{{youtube-timestamp <start>}}";
+  const otherVideoOutputFormat = logseq.settings?.otherVideoOutputFormat || "{{renderer :media-timestamp, <start>}}";
+  
+  const formattedTime = formatTime(seconds);
+  
+  if (format === 'youtube') {
+    return youtubeOutputFormat.replace("<start>", formattedTime);
+  } else if (format === 'other') {
+    return otherVideoOutputFormat.replace("<start>", formattedTime);
+  } else {
+    // 如果没有检测到特定格式，使用默认的时间戳格式
+    return `{{timestamp ${seconds}}}`;
+  }
+}
+
+function convertTimestampFormat(content: string): { text: string, format: string } {
+  const youtubeFormat = logseq.settings?.youtubeOutputFormat || "{{youtube-timestamp <start>}} <text>";
+  const otherVideoFormat = logseq.settings?.otherVideoOutputFormat || "{{renderer :media-timestamp, <start>}} <text>";
+
+  // 创建正则表达式来匹配这两种格式
+  const youtubeRegex = new RegExp(youtubeFormat.replace('<start>', '(\\d{2}:\\d{2}:\\d{2}|\\d+)').replace('<text>', '(.+)'), 'g');
+  const otherVideoRegex = new RegExp(otherVideoFormat.replace('<start>', '(\\d{2}:\\d{2}:\\d{2}|\\d+)').replace('<text>', '(.+)'), 'g');
+
+  let detectedFormat = '';
+
+  // 替换 YouTube 格式
+  content = content.replace(youtubeRegex, (match, timestamp, text) => {
+    detectedFormat = 'youtube';
+    const seconds = convertToSeconds(timestamp);
+    return `{{timestamp ${seconds}}} ${text.trim()}`;
+  });
+
+  // 如果没有匹配到 YouTube 格式，尝试匹配其他视频格式
+  if (!detectedFormat) {
+    content = content.replace(otherVideoRegex, (match, timestamp, text) => {
+      detectedFormat = 'other';
+      const seconds = convertToSeconds(timestamp);
+      return `{{timestamp ${seconds}}} ${text.trim()}`;
+    });
+  }
+
+  return { text: content, format: detectedFormat };
+}
+
+function convertToSeconds(time: string): number {
+  if (time.includes(':')) {
+    // 处理 HH:MM:SS 格式
+    const [hours, minutes, seconds] = time.split(':').map(Number);
+    return hours * 3600 + minutes * 60 + seconds;
+  } else {
+    // 处理已经是秒数的情况
+    return parseInt(time, 10);
+  }
+}
+
+async function createBlockStructureAndInsertContent(block: any, content: Array<{start: number, text: string}>, options: {
+  parentBlockTitle?: string,
+  grandparentBlockTitle?: string,
+  outputFormat: string
+}) {
+  let insertionBlock = block;
+  
+  if (options.grandparentBlockTitle && options.parentBlockTitle) {
+    // 创建祖父块（与视频块同级）
+    const grandparentBlock = await logseq.Editor.insertBlock(block.uuid, options.grandparentBlockTitle, { sibling: true });
+    if (!grandparentBlock) {
+      throw new Error("Failed to create grandparent block");
+    }
+    // 创建父块（作为祖父块的子块）
+    const parentBlock = await logseq.Editor.insertBlock(grandparentBlock.uuid, options.parentBlockTitle, { sibling: false });
+    if (!parentBlock) {
+      throw new Error("Failed to create parent block");
+    }
+    insertionBlock = parentBlock;
+  } else if (options.grandparentBlockTitle || options.parentBlockTitle) {
+    // 如果只有一个非空，创建一个块（与视频块同级）
+    const blockTitle = options.grandparentBlockTitle || options.parentBlockTitle;
+    const newBlock = await logseq.Editor.insertBlock(block.uuid, blockTitle, { sibling: true });
+    if (!newBlock) {
+      throw new Error("Failed to create block");
+    }
+    insertionBlock = newBlock;
+  }
+
+  // 插入内容
+  for (const segment of content) {
+    const formattedContent = options.outputFormat
+      .replace("<start>", formatTime(segment.start))
+      .replace("<text>", segment.text);
+    await logseq.Editor.insertBlock(insertionBlock.uuid, formattedContent, { sibling: false });
   }
 }
