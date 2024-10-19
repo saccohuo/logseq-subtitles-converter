@@ -1331,7 +1331,7 @@ async function createBlockStructureAndInsertContent(block: any, content: Array<{
   grandparentBlockTitle?: string,
   outputFormat: string
 }) {
-  let insertionBlock = block;
+  let insertionBlockUUID = block.uuid;
   
   if (options.grandparentBlockTitle && options.parentBlockTitle) {
     // 创建祖父块（与视频块同级）
@@ -1344,7 +1344,7 @@ async function createBlockStructureAndInsertContent(block: any, content: Array<{
     if (!parentBlock) {
       throw new Error("Failed to create parent block");
     }
-    insertionBlock = parentBlock;
+    insertionBlockUUID = parentBlock.uuid;
   } else if (options.grandparentBlockTitle || options.parentBlockTitle) {
     // 如果只有一个非空，创建一个块（与视频块同级）
     const blockTitle = options.grandparentBlockTitle || options.parentBlockTitle;
@@ -1352,14 +1352,17 @@ async function createBlockStructureAndInsertContent(block: any, content: Array<{
     if (!newBlock) {
       throw new Error("Failed to create block");
     }
-    insertionBlock = newBlock;
+    insertionBlockUUID = newBlock.uuid;
   }
 
-  // 插入内容
-  for (const segment of content) {
-    const formattedContent = options.outputFormat
+  // 准备批量插入的内容
+  const batchBlocks: IBatchBlock[] = content.map(segment => ({
+    content: options.outputFormat
       .replace("<start>", formatTime(segment.start))
-      .replace("<text>", segment.text);
-    await logseq.Editor.insertBlock(insertionBlock.uuid, formattedContent, { sibling: false });
-  }
+      .replace("<text>", segment.text),
+    children: []
+  }));
+
+  // 使用 insertBatchBlock 批量插入内容
+  await logseq.Editor.insertBatchBlock(insertionBlockUUID, batchBlocks, { sibling: false });
 }
