@@ -1154,7 +1154,9 @@ async function getBlockContentRecursively(block: any): Promise<string> {
 }
 
 async function summarizeContent(content: string, apiSettingPriority: string): Promise<string> {
-  console.log("Starting summarizeContent, content length:", content.length, "apiSettingPriority:", apiSettingPriority);
+  console.log("Starting summarizeContent function");
+  console.log("API Setting Priority:", apiSettingPriority);
+  
   const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
   const endpoint = `${baseEndpoint}/summarize`;
   
