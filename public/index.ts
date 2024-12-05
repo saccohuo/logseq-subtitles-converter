@@ -595,10 +595,15 @@ async function transcribeContent(content: string, options: TranscriptionOptions,
   const baseEndpoint = logseq.settings?.whisperLocalEndpoint || "http://127.0.0.1:5014";
   const endpoint = `${baseEndpoint}/transcribe`;
   
+  const graph = await logseq.App.getCurrentGraph();
+  const graphPath = graph?.path;
+  console.log("Current graph path:", graphPath);
+  
   const formData = new FormData();
   formData.append('text', content);
   formData.append('hotwords', hotwords);
   formData.append('perform_segmentation', options.performSegmentation ? 'true' : 'false');
+  formData.append('graph_path', graphPath || '');  // 添加图谱路径
   appendCommonFormData(formData, options);
   
   try {
