@@ -7,7 +7,7 @@
    > Whisperによって文字起こしをおこない、Logseqにその内容を取り込むまで がローカル内で完結します。
 
 ### 依存関係
-* OpenAIのWhisper APIは使用しません。動作させるには必ず毎回、このプラグイン用の **[専用サーバー(logseq-whisper-subtitles-server)](https://github.com/usoonees/logseq-whisper-subtitles-server)** を実行させる必要があります。その専用サーバーを介して、データを受信します。(ローカルの「Whisper」の処理サーバーに要求します。)
+* OpenAIのWhisper APIは使用しません。動作させるには必ず毎回、このプラグイン用の **[専用サーバー(logseq-whisper-subtitles-server)](https://github.com/saccohuo/logseq-whisper-subtitles-server)** を実行させる必要があります。その専用サーバーを介して、データを受信します。(ローカルの「Whisper」の処理サーバーに要求します。)
 * このプラグインは現在、YouTubeとローカルファイルの動画をサポートしています。
    > ローカルファイルの動画でのタイムスタンプ ナビゲーション機能を使用するには、[logseq-plugin-media-ts](https://github.com/sethyuan/logseq-plugin-media-ts) プラグインをインストールしてください。
 
@@ -32,5 +32,5 @@
 
 ### 関連リポジトリ
 * [Whisper](https://github.com/openai/whisper): 音声認識モデルと呼ばれます。動画からその音声を抽出し、さらにテキストを抽出します。
-* [logseq-whisper-subtitles-server](https://github.com/usoonees/logseq-whisper-subtitles-server) - Whisperに処理を要求するための このプラグイン専用サーバーです。
+* [logseq-whisper-subtitles-server](https://github.com/saccohuo/logseq-whisper-subtitles-server) - Whisperに処理を要求するための このプラグイン専用サーバーです。
 * [logseq-plugin-media-ts](https://github.com/sethyuan/logseq-plugin-media-ts) (Logseq用プラグイン): YouTubeなどの動画やその他のオーディオなどのタイムスタンプを生成するプラグイン。それをクリックしたときに、その対応するビデオ/オーディオの位置に移動します。
